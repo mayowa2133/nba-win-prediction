@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data files (too large for GitHub)
+data/
+!data/.gitkeep
+
+# Model files (too large for GitHub)
+models/
+!models/.gitkeep
+
+# Logs and predictions
+logs/
+predictions/
+odds/
+
+# Environment variables (API keys) - CRITICAL!
+.env
+.env.local
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+
+# Python virtual environment
+.venv/
+
