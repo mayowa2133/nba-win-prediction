@@ -38,9 +38,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import numpy as np
 import pandas as pd
 
+from src.contracts.market_readiness import get_market_readiness
+from src.contracts.versions import SCORED_OUTPUT_SCHEMA_VERSION
+from src.utils.artifact_metadata import derive_model_version, stable_id, utc_now_iso
+
 MINUTES_MODEL_PATH = Path("models/minutes_regression.pkl")
 SIGMA_MODEL_PATH = Path("models/points_sigma_model.pkl")
 CALIBRATOR_PATH = Path("models/over_prob_calibrator.pkl")
+PROP_BASELINE_MODEL_PATH = Path("models/points_regression_no_props.pkl")
 
 # Default per-market model bundles (mean models)
 DEFAULT_MODEL_PATHS = {
@@ -429,6 +434,16 @@ def load_model_bundle(model_path: Path) -> Dict:
     return bundle
 
 
+def load_optional_model_bundle(model_path: Path) -> Optional[Dict]:
+    if not model_path.exists():
+        return None
+    with open(model_path, "rb") as f:
+        bundle = pickle.load(f)
+    if not isinstance(bundle, dict) or "model" not in bundle or "feature_cols" not in bundle:
+        return None
+    return bundle
+
+
 def load_features(features_csv: Path) -> pd.DataFrame:
     if not features_csv.exists():
         raise FileNotFoundError(f"Features CSV not found: {features_csv}")
@@ -472,6 +487,115 @@ def find_latest_feature_row(
         return None
     sub = sub.sort_values("game_date_ts", ascending=False)
     return sub.iloc[0]
+
+
+def default_feature_value(feature_name: str) -> float:
+    if feature_name in ["vegas_game_total", "vegas_spread", "vegas_abs_spread"]:
+        return 0.0
+    if feature_name == "is_injured":
+        return 0.0
+    if feature_name == "days_since_last_dnp":
+        return 999.0
+    if feature_name == "dnp_count_last_10":
+        return 0.0
+    if feature_name == "has_prop_line":
+        return 0.0
+    if feature_name in ["blowout_prob", "is_likely_blowout", "garbage_time_minutes_est", "vegas_spread_abs_normalized"]:
+        return 0.0
+    if feature_name in [
+        "player_vs_opp_pts_avg_career",
+        "player_vs_opp_pts_avg_last_5",
+        "player_vs_opp_minutes_avg_career",
+        "player_vs_opp_minutes_avg_last_5",
+        "player_vs_opp_games_count",
+    ]:
+        return 0.0
+    if feature_name in [
+        "prop_pts_line",
+        "prop_over_odds_best",
+        "prop_under_odds_best",
+        "prop_minus_pts_roll5",
+        "prop_minus_pts_roll15",
+        "prop_minus_season_mean",
+        "prop_minus_career_mean",
+        "prop_minus_model_baseline",
+    ]:
+        return 0.0
+    if feature_name in [
+        "teammate_out_count",
+        "teammate_out_star_count",
+        "teammate_out_usg15_sum",
+        "teammate_out_min15_sum",
+        "team_available_players",
+        "is_team_shorthanded",
+    ]:
+        return 0.0
+    if "fg_pct" in feature_name:
+        return 0.45
+    if "3pt_pct" in feature_name:
+        return 0.35
+    if feature_name == "minutes_pred":
+        return 0.0
+    return 0.0
+
+
+def build_current_prop_overrides(feat_row: pd.Series, market_row: pd.Series) -> Dict[str, float]:
+    """
+    Inject tonight's live prop line/odds into the feature vector and recompute
+    derived line-vs-signal deltas.
+    """
+    line = market_row.get("prop_pts_line")
+    if line is None or pd.isna(line):
+        return {}
+
+    line_f = float(line)
+    over_odds = _safe_float(market_row.get("over_odds_best"), 0.0)
+    under_odds = _safe_float(market_row.get("under_odds_best"), 0.0)
+    pts_roll5 = _safe_float(feat_row.get("pts_roll5"), 0.0)
+    pts_roll15 = _safe_float(feat_row.get("pts_roll15"), 0.0)
+    season_mean = _safe_float(feat_row.get("player_pts_season_mean"), 0.0)
+    career_mean = _safe_float(feat_row.get("player_pts_career_mean"), 0.0)
+
+    return {
+        "prop_pts_line": line_f,
+        "prop_over_odds_best": over_odds,
+        "prop_under_odds_best": under_odds,
+        "has_prop_line": 1.0,
+        "prop_minus_pts_roll5": line_f - pts_roll5,
+        "prop_minus_pts_roll15": line_f - pts_roll15,
+        "prop_minus_season_mean": line_f - season_mean,
+        "prop_minus_career_mean": line_f - career_mean,
+    }
+
+
+def build_feature_map(
+    feature_cols: List[str],
+    feat_row: pd.Series,
+    overrides: Dict[str, float],
+) -> Dict[str, float]:
+    feat_map: Dict[str, float] = {}
+    for feature_name in feature_cols:
+        if feature_name in overrides:
+            feat_map[feature_name] = float(overrides[feature_name])
+            continue
+
+        if feature_name not in feat_row.index or pd.isna(feat_row[feature_name]):
+            feat_map[feature_name] = default_feature_value(feature_name)
+            continue
+
+        feat_map[feature_name] = _safe_float(feat_row[feature_name], default_feature_value(feature_name))
+    return feat_map
+
+
+def predict_bundle_with_sources(
+    bundle: Dict,
+    feat_row: pd.Series,
+    overrides: Dict[str, float],
+) -> float:
+    feature_cols = list(bundle.get("feature_cols", []))
+    feat_map = build_feature_map(feature_cols, feat_row, overrides)
+    x = np.array([feat_map[c] for c in feature_cols], dtype=float).reshape(1, -1)
+    return float(bundle["model"].predict(x)[0])
 
 
 # ---------------------------------------------------------------------
@@ -672,6 +796,7 @@ def evaluate_slate(
             player_id_to_pos=player_id_to_pos,
             game_lines_df=game_lines_df,
         )
+        overrides.update(build_current_prop_overrides(feat_row, row))
 
         # Require recomputed matchup features if model expects them.
         # Allow missing DvP if positions are not loaded OR if this player has no pos bucket.
@@ -695,65 +820,22 @@ def evaluate_slate(
         if skip_row:
             continue
 
-        # Create feature vector from last row + overrides
-        x_vals: List[float] = []
-        for c in feature_cols:
-            if c in overrides:
-                x_vals.append(float(overrides[c]))
-            else:
-                if c not in feat_row.index:
-                    # Handle missing Vegas features gracefully (for backward compatibility)
-                    if c in ["vegas_game_total", "vegas_spread", "vegas_abs_spread"]:
-                        x_vals.append(0.0)
-                    # Handle missing injury features gracefully
-                    elif c == "is_injured":
-                        x_vals.append(0)  # Assume healthy if not available
-                    elif c == "days_since_last_dnp":
-                        x_vals.append(999)  # Never injured if not available
-                    elif c == "dnp_count_last_10":
-                        x_vals.append(0)  # No DNPs if not available
-                    # Handle missing prop features gracefully
-                    elif c in ["prop_pts_line", "prop_over_odds_best", "prop_under_odds_best", "has_prop_line",
-                               "prop_minus_pts_roll5", "prop_minus_pts_roll15", "prop_minus_season_mean",
-                               "prop_minus_career_mean", "prop_minus_model_baseline"]:
-                        if c == "has_prop_line":
-                            x_vals.append(0.0)
-                        else:
-                            x_vals.append(0.0)
-                    # Handle missing minutes_pred (will be computed if needed)
-                    elif c == "minutes_pred":
-                        # This should be computed earlier, but if missing, use 0
-                        x_vals.append(0.0)
-                    # Handle missing Phase 4A features gracefully
-                    elif c in ["blowout_prob", "is_likely_blowout", "garbage_time_minutes_est", "vegas_spread_abs_normalized"]:
-                        x_vals.append(0.0)
-                    elif c in ["player_vs_opp_pts_avg_career", "player_vs_opp_pts_avg_last_5",
-                               "player_vs_opp_minutes_avg_career", "player_vs_opp_minutes_avg_last_5",
-                               "player_vs_opp_games_count"]:
-                        x_vals.append(0.0)
-                    elif c in ["opp_fg_pct_allowed_vs_pos_roll5", "opp_fg_pct_allowed_vs_pos_roll15",
-                               "opp_3pt_pct_allowed_vs_pos_roll5", "opp_3pt_pct_allowed_vs_pos_roll15"]:
-                        # Use league averages
-                        if "fg_pct" in c:
-                            x_vals.append(0.45)
-                        elif "3pt_pct" in c:
-                            x_vals.append(0.35)
-                        else:
-                            x_vals.append(0.0)
-                    # Phase 4B: Lineup context features
-                    elif c in [
-                        "teammate_out_count",
-                        "teammate_out_star_count",
-                        "teammate_out_usg15_sum",
-                        "teammate_out_min15_sum",
-                        "team_available_players",
-                        "is_team_shorthanded",
-                    ]:
-                        x_vals.append(0.0)
-                    else:
-                        raise ValueError(f"Feature row missing expected column: {c}")
-                else:
-                    x_vals.append(float(feat_row[c]))
+        baseline_bundle = getattr(evaluate_slate, "_prop_baseline_bundle", None)
+        if (
+            market_key == "player_points"
+            and baseline_bundle is not None
+            and overrides.get("has_prop_line", 0.0) > 0.0
+            and "prop_minus_model_baseline" in feature_cols
+        ):
+            baseline_pred = predict_bundle_with_sources(
+                baseline_bundle,
+                feat_row,
+                overrides,
+            )
+            overrides["prop_minus_model_baseline"] = overrides["prop_pts_line"] - baseline_pred
+
+        feat_map = build_feature_map(feature_cols, feat_row, overrides)
+        x_vals = [feat_map[c] for c in feature_cols]
 
         x = np.array(x_vals, dtype=float).reshape(1, -1)
         
@@ -794,30 +876,8 @@ def evaluate_slate(
             tb = tier_models_local.get(player_tier)
             if tb is not None:
                 cols_t = tb.get("feature_cols", [])
-                # cols_t are unified feature cols minus star_tier_pts (by construction)
-                feat_map = {c: float(v) for c, v in zip(feature_cols, x_vals)}
-                x_t_vals: List[float] = []
-                for c in cols_t:
-                    if c in feat_map:
-                        x_t_vals.append(_safe_float(feat_map[c], 0.0))
-                    else:
-                        # defaults
-                        if c in ["vegas_game_total", "vegas_spread", "vegas_abs_spread"]:
-                            x_t_vals.append(0.0)
-                        elif c == "is_injured":
-                            x_t_vals.append(0.0)
-                        elif c == "days_since_last_dnp":
-                            x_t_vals.append(999.0)
-                        elif c == "dnp_count_last_10":
-                            x_t_vals.append(0.0)
-                        elif c == "has_prop_line":
-                            x_t_vals.append(0.0)
-                        elif "fg_pct" in c:
-                            x_t_vals.append(0.45)
-                        elif "3pt_pct" in c:
-                            x_t_vals.append(0.35)
-                        else:
-                            x_t_vals.append(0.0)
+                tier_feat_map = build_feature_map(cols_t, feat_row, overrides)
+                x_t_vals = [tier_feat_map[c] for c in cols_t]
                 try:
                     mu_t = float(tb["model"].predict(np.array(x_t_vals, dtype=float).reshape(1, -1))[0])
                 except Exception:
@@ -870,36 +930,20 @@ def evaluate_slate(
             if sigma_cols == feature_cols + ["mu_hat"]:
                 x_sigma = np.concatenate([x, np.array([[mu]], dtype=float)], axis=1)
             else:
-                feat_map = {c: float(v) for c, v in zip(feature_cols, x_vals)}
-                feat_map["mu_hat"] = float(mu)
+                sigma_feat_map = dict(feat_map)
+                sigma_feat_map["mu_hat"] = float(mu)
                 # If sigma model expects derived sigma features, compute them.
                 try:
                     from src.utils.sigma_features import add_sigma_derived_features_map
-                    add_sigma_derived_features_map(feat_map)
+                    add_sigma_derived_features_map(sigma_feat_map)
                 except Exception:
                     pass
                 x_sigma_vals: List[float] = []
                 for c in sigma_cols:
-                    if c in feat_map:
-                        x_sigma_vals.append(_safe_float(feat_map[c], 0.0))
+                    if c in sigma_feat_map:
+                        x_sigma_vals.append(_safe_float(sigma_feat_map[c], 0.0))
                     else:
-                        # fall back to defaults similar to training scripts
-                        if c in ["vegas_game_total", "vegas_spread", "vegas_abs_spread"]:
-                            x_sigma_vals.append(0.0)
-                        elif c == "is_injured":
-                            x_sigma_vals.append(0.0)
-                        elif c == "days_since_last_dnp":
-                            x_sigma_vals.append(999.0)
-                        elif c == "dnp_count_last_10":
-                            x_sigma_vals.append(0.0)
-                        elif c == "has_prop_line":
-                            x_sigma_vals.append(0.0)
-                        elif "fg_pct" in c:
-                            x_sigma_vals.append(0.45)
-                        elif "3pt_pct" in c:
-                            x_sigma_vals.append(0.35)
-                        else:
-                            x_sigma_vals.append(0.0)
+                        x_sigma_vals.append(default_feature_value(c))
                 x_sigma = np.array(x_sigma_vals, dtype=float).reshape(1, -1)
 
             try:
@@ -937,12 +981,37 @@ def evaluate_slate(
         edge_over = p_over - implied_over if not math.isnan(implied_over) else float("nan")
         edge_under = p_under - implied_under if not math.isnan(implied_under) else float("nan")
 
+        readiness = get_market_readiness(market_key)
+        model_version = str(model_bundle.get("_model_version", "unknown"))
+        derived_game_id = stable_id(
+            row.get("game_date"),
+            row.get("home_team"),
+            row.get("away_team"),
+            prefix="game",
+        )
+        recommendation_id = stable_id(
+            row.get("player"),
+            row.get("market_key"),
+            row.get("game_date"),
+            row.get("home_team"),
+            row.get("away_team"),
+            line,
+            prefix="rec",
+        )
+
         rec = {
+            "recommendation_id": recommendation_id,
+            "game_id": derived_game_id,
             "player": row["player"],
             "game_date": row["game_date"],
             "home_team": row.get("home_team"),
             "away_team": row.get("away_team"),
             "market_key": row.get("market_key"),
+            "scored_output_schema_version": SCORED_OUTPUT_SCHEMA_VERSION,
+            "generated_at_utc": getattr(evaluate_slate, "_generated_at", utc_now_iso()),
+            "model_version": model_version,
+            "market_readiness_status": readiness["status"],
+            "market_readiness_tier": readiness["tier"],
             "prop_pts_line": line,
             "model_mean_pts": mu,
             "sigma": float(sigma_eff),
@@ -1118,6 +1187,14 @@ def main():
     # For multi-market support, we load models per market_key and route each row
     # to the appropriate model bundle. Tiered/quantile/sigma/calibration currently
     # apply to player_points only (you can extend later per market).
+    per_market_models: Dict[str, Dict] = {}
+
+    def register_bundle(market_key: str, model_path_for_bundle: Path, bundle: Dict) -> Dict:
+        bundle["_model_path"] = str(model_path_for_bundle)
+        bundle["_model_version"] = derive_model_version(model_path_for_bundle, bundle)
+        per_market_models[market_key] = bundle
+        return bundle
+
     use_quantile = args.use_quantile_models
     use_ensemble = args.use_tiered_ensemble and not use_quantile
     use_tiered = args.use_tiered_models and (not use_quantile) and (not use_ensemble)  # quantile/ensemble take precedence
@@ -1135,6 +1212,17 @@ def main():
             use_quantile = False
         else:
             print(f"  -> Loaded {len(quantile_models)} quantile models (10th, 50th, 90th percentiles)")
+            bundle_points = load_model_bundle(model_paths.get("player_points", model_path))
+            register_bundle("player_points", model_paths.get("player_points", model_path), bundle_points)
+            for mk, pth in model_paths.items():
+                if mk == "player_points":
+                    continue
+                try:
+                    if Path(pth).exists():
+                        register_bundle(mk, Path(pth), load_model_bundle(Path(pth)))
+                        print(f"  -> Loaded {mk} model from {pth}")
+                except Exception as e:
+                    print(f"[WARN] Failed to load model for {mk} at {pth}: {e}")
             # Store in evaluate_slate function for access
             evaluate_slate._use_quantile = True
             evaluate_slate._quantile_models = quantile_models
@@ -1150,9 +1238,19 @@ def main():
 
         # Unified model
         bundle_u = load_model_bundle(model_path)
+        register_bundle("player_points", model_path, bundle_u)
         model_u = bundle_u["model"]
         feature_cols_u = bundle_u["feature_cols"]
         sigma_u = float(bundle_u.get("sigma", 6.0))
+        for mk, pth in model_paths.items():
+            if mk == "player_points":
+                continue
+            try:
+                if Path(pth).exists():
+                    register_bundle(mk, Path(pth), load_model_bundle(Path(pth)))
+                    print(f"  -> Loaded {mk} model from {pth}")
+            except Exception as e:
+                print(f"[WARN] Failed to load model for {mk} at {pth}: {e}")
 
         # Tiered models
         tier_models = {}
@@ -1200,35 +1298,50 @@ def main():
             sigma = list(tier_models.values())[0].get("sigma", 6.0)
             # Create a dummy unified model for fallback
             bundle = load_model_bundle(model_path)
+            register_bundle("player_points", model_path, bundle)
+            for mk, pth in model_paths.items():
+                if mk == "player_points":
+                    continue
+                try:
+                    if Path(pth).exists():
+                        register_bundle(mk, Path(pth), load_model_bundle(Path(pth)))
+                        print(f"  -> Loaded {mk} model from {pth}")
+                except Exception as e:
+                    print(f"[WARN] Failed to load model for {mk} at {pth}: {e}")
             model = bundle["model"]
             print(f"  -> Loaded {len(tier_models)} tier models, using as primary")
     else:
         # Load points model as default (used for player_points or as fallback)
         print("Loading model bundle(s)...")
         bundle_points = load_model_bundle(model_paths.get("player_points", model_path))
+        register_bundle("player_points", model_paths.get("player_points", model_path), bundle_points)
         model = bundle_points["model"]
         feature_cols = bundle_points["feature_cols"]
         sigma = float(bundle_points.get("sigma", 6.0))
         print(f"  -> Loaded points model with {len(feature_cols)} features, sigma={sigma:.3f}")
 
         # Load other market models (reb/ast/3PM) if present; they should share the same feature cols.
-        per_market_models: Dict[str, Dict] = {"player_points": bundle_points}
         for mk, pth in model_paths.items():
             if mk == "player_points":
                 continue
             try:
                 if Path(pth).exists():
-                    b = load_model_bundle(Path(pth))
-                    per_market_models[mk] = b
+                    register_bundle(mk, Path(pth), load_model_bundle(Path(pth)))
                     print(f"  -> Loaded {mk} model from {pth}")
                 else:
                     print(f"[WARN] Model for {mk} not found at {pth}; will skip {mk} rows.")
             except Exception as e:
                 print(f"[WARN] Failed to load model for {mk} at {pth}: {e}")
 
-        evaluate_slate._per_market_models = per_market_models
         evaluate_slate._use_quantile = False
         evaluate_slate._use_tiered_ensemble = False
+
+    evaluate_slate._per_market_models = per_market_models
+    evaluate_slate._generated_at = utc_now_iso()
+    prop_baseline_bundle = load_optional_model_bundle(PROP_BASELINE_MODEL_PATH)
+    evaluate_slate._prop_baseline_bundle = prop_baseline_bundle
+    if prop_baseline_bundle is not None:
+        prop_baseline_bundle["_model_version"] = derive_model_version(PROP_BASELINE_MODEL_PATH, prop_baseline_bundle)
 
     # Optional: heteroscedastic sigma model + calibrator for probabilities
     evaluate_slate._use_sigma_model = bool(args.use_sigma_model)

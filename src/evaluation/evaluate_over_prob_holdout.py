@@ -91,7 +91,7 @@ def load_sigma_bundle(path: Path) -> Tuple[Optional[object], Optional[List[str]]
 
 def ensure_minutes_pred(df: pd.DataFrame) -> None:
     # Reuse the same helper as training
-    from build_points_regression import add_minutes_pred_feature
+    from src.models.build_points_regression import add_minutes_pred_feature
 
     minutes_path = Path("models/minutes_regression.pkl")
     if "minutes_pred" in df.columns:
@@ -252,5 +252,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

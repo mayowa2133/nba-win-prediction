@@ -1,38 +1,35 @@
 #!/usr/bin/env python
-"""
-run_full_slate_pipeline.py
+"""End-to-end pipeline for training, scoring, and materializing beta recommendations."""
 
-One-click pipeline to:
-
-  1) Update player game logs incrementally
-  2) Rebuild player points features
-  3) Train minutes regression model
-  4) Retrain points regression model (default: XGBoost) with a fixed season split
-  5) Train sigma (variance) model for points
-  6) Refit over-probability calibrator
-  7) Fetch fresh props from The Odds API into data/odds_slate.csv
-  7b) Log raw props + build market lines (dated files)
-  7c) Scan slate with model and write edges (dated file)
-  7d) Join ALL logged market lines into features to create features_with_props
-  8) Run star_best_bets_screener on the fresh slate (and log output)
-
-Assumes:
-  - You run this from the project root (where these scripts live)
-  - Your virtualenv is already activated (so `python` is the right one)
-
-Usage:
-  python run_full_slate_pipeline.py
-"""
-
+import argparse
+import json
 import subprocess
 import sys
 import shutil
 import re
-from datetime import datetime
+import os
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable, Optional
 
 import pandas as pd
 import numpy as np
+
+from src.data.build_lineup_projections import build_lineup_projection_frame, persist_lineup_projections
+from src.data.build_starter_history import build_starter_history_frame, persist_starter_history
+from src.data.oddspapi_game_odds import (
+    DEFAULT_BOOKMAKERS,
+    fetch_current_game_odds_snapshots,
+    fetch_historical_game_odds_snapshots,
+    get_odds_papi_api_key,
+    persist_game_odds,
+)
+from src.data.official_injuries import fetch_official_injury_reports, persist_official_injury_reports
+from src.evaluation.build_market_readiness_snapshot import load_training_metrics
+from src.evaluation.build_market_readiness_snapshot import main as build_market_readiness_main
+from src.inference.score_game_markets import build_game_market_recommendations
+from src.warehouse.db import get_database_url, init_database
+from src.warehouse.materialize import materialize_edges
 
 # You can tweak these defaults if you want different behavior
 TRAIN_MAX_SEASON = "2024"
@@ -52,6 +49,7 @@ LADDER_THRESHOLDS = "10,15,20,25,30,35,40"
 TARGET_PROB = "0.50"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PYTHON_BIN = sys.executable
 
 # NEW: logging locations
 PROPS_RAW_DIR = Path("data/props_raw")
@@ -64,6 +62,18 @@ LATEST_ODDS_SLATE = Path("data/odds_slate.csv")
 LATEST_MARKET_LINES = Path("data/market_lines.csv")
 LATEST_EDGES = Path("data/edges_with_market.csv")
 LATEST_GAME_LINES = Path("data/game_lines.csv")  # NEW: for Vegas lines
+LATEST_GAME_MARKET_RECOMMENDATIONS = Path("data/game_market_recommendations.csv")
+LATEST_MARKET_READINESS = Path("data/market_readiness.csv")
+OFFICIAL_INJURIES_CSV = Path("data/official_injuries.csv")
+STARTER_HISTORY_CSV = Path("data/starter_history.csv")
+LINEUP_PROJECTIONS_CSV = Path("data/lineup_projections.csv")
+GAME_ODDS_SNAPSHOTS_CSV = Path("data/game_odds_snapshots.csv")
+CLOSING_LINES_CSV = Path("data/closing_lines.csv")
+PLAYER_POSITIONS_CSV = Path("data/player_positions.csv")
+PIPELINE_STATE_DIR = Path("data/pipeline_state")
+INJURY_BACKFILL_CURSOR = PIPELINE_STATE_DIR / "injury_backfill_cursor.json"
+GAME_ODDS_BACKFILL_CURSOR = PIPELINE_STATE_DIR / "game_odds_backfill_cursor.json"
+HISTORICAL_REPLAY_CURSOR = PIPELINE_STATE_DIR / "historical_replay_cursor.json"
 
 FEATURES_CSV = Path("data/player_points_features.csv")
 FEATURES_WITH_PROPS_CSV = Path("data/player_points_features_with_props.csv")
@@ -114,6 +124,10 @@ def run(cmd, desc=None, stdout_path: Path | None = None):
         if stdout_path is not None:
             print(f"[ERROR] See log: {stdout_path}")
         sys.exit(e.returncode)
+
+
+def python_cmd(*args: str) -> list[str]:
+    return [PYTHON_BIN, *args]
 
 
 def normalize_player_name(s: str) -> str:
@@ -558,104 +572,313 @@ def build_features_with_props(features_csv: Path, market_dir: Path, out_csv: Pat
     return non_null, share
 
 
-def main():
-    # Just to be safe, run everything from the project root
-    print(f"Running pipeline from: {PROJECT_ROOT}")
-    if PROJECT_ROOT != Path.cwd():
-        print(f"Changing working directory to: {PROJECT_ROOT}")
-        try:
-            Path.chdir(PROJECT_ROOT)  # type: ignore[attr-defined]
-        except AttributeError:
-            import os
-            os.chdir(PROJECT_ROOT)
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
-    # NEW: ensure dirs exist
+
+def read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the NBA betting pipeline in daily, bootstrap, or backfill-only mode.")
+    parser.add_argument("--mode", choices=["daily", "bootstrap", "backfill-only"], default="daily")
+    parser.add_argument("--report-date", default=datetime.now().date().isoformat())
+    parser.add_argument("--backfill-start-date", default=None)
+    parser.add_argument("--backfill-end-date", default=None)
+    parser.add_argument("--database-url", default=None)
+    parser.add_argument("--bookmakers", default=",".join(DEFAULT_BOOKMAKERS))
+    parser.add_argument("--skip-star-screener", action="store_true")
+    parser.add_argument("--skip-prop-training", action="store_true")
+    parser.add_argument("--skip-game-training", action="store_true")
+    parser.add_argument("--publish-current-day-at-end", action="store_true")
+    parser.add_argument("--reset-cursors", action="store_true")
+    return parser
+
+
+def ensure_runtime_dirs() -> None:
     PROPS_RAW_DIR.mkdir(parents=True, exist_ok=True)
     PROPS_MARKET_DIR.mkdir(parents=True, exist_ok=True)
     EDGES_DIR.mkdir(parents=True, exist_ok=True)
     RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
     GAME_LINES_DIR.mkdir(parents=True, exist_ok=True)
+    PIPELINE_STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Use today's date stamp for logging (local machine time)
-    today = datetime.now().date().isoformat()
 
-    raw_props_dated = PROPS_RAW_DIR / f"odds_slate_{today}.csv"
-    market_lines_dated = PROPS_MARKET_DIR / f"market_lines_{today}.csv"
-    edges_dated = EDGES_DIR / f"edges_with_market_{today}.csv"
-    screener_log = RUN_LOG_DIR / f"star_best_bets_{today}.txt"
-    game_lines_dated = GAME_LINES_DIR / f"game_lines_{today}.csv"
+def run_command(
+    cmd: list[str],
+    *,
+    stdout_path: Optional[Path] = None,
+) -> None:
+    print(f"\n$ {' '.join(cmd)}\n")
+    if stdout_path is None:
+        subprocess.run(cmd, check=True)
+        return
 
-    # 1) Update logs incrementally
-    run(
-        ["python", "src/pipeline/update_player_game_logs_incremental.py"],
-        desc="Step 1/9: Updating player game logs incrementally",
-    )
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    with stdout_path.open("w", encoding="utf-8") as handle:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="")
+            handle.write(line)
+        rc = process.wait()
+        if rc != 0:
+            raise subprocess.CalledProcessError(rc, cmd)
 
-    # 2) Rebuild features
-    run(
-        ["python", "src/data/build_player_points_features.py"],
-        desc="Step 2/9: Rebuilding player points features",
-    )
 
-    # 2a) Fetch/update injury data from game logs
-    run(
-        ["python", "src/data/fetch_injury_data.py"],
-        desc="Step 2a/9: Fetching injury/availability data from game logs",
-    )
+def execute_step(
+    run_log: dict,
+    name: str,
+    func: Callable[[], Optional[dict]],
+    *,
+    strict: bool,
+) -> Optional[dict]:
+    started_at = utc_now_iso()
+    try:
+        result = func() or {}
+        run_log["steps"].append(
+            {
+                "name": name,
+                "status": "completed",
+                "strict": strict,
+                "started_at": started_at,
+                "finished_at": utc_now_iso(),
+                **result,
+            }
+        )
+        return result
+    except Exception as exc:  # pragma: no cover - failure path exercised in pipeline tests
+        run_log["steps"].append(
+            {
+                "name": name,
+                "status": "failed",
+                "strict": strict,
+                "started_at": started_at,
+                "finished_at": utc_now_iso(),
+                "error": str(exc),
+            }
+        )
+        if strict:
+            raise
+        run_log.setdefault("warnings", []).append(f"{name}: {exc}")
+        return None
 
-    # 2b) Join injury data into features
-    build_features_with_injuries(
+
+def default_backfill_window(report_day: date) -> tuple[date, date]:
+    current_season_start = report_day.year if report_day.month >= 10 else report_day.year - 1
+    start = date(current_season_start - 1, 10, 1)
+    end = report_day - timedelta(days=1)
+    return start, end
+
+
+def rows_for_date(path: Path, date_value: str, *date_columns: str) -> int:
+    if not path.exists():
+        return 0
+    df = pd.read_csv(path)
+    for column in date_columns:
+        if column not in df.columns:
+            continue
+        return int((df[column].astype(str) == date_value).sum())
+    return 0
+
+
+def require_rows(path: Path, date_value: str, *date_columns: str) -> int:
+    count = rows_for_date(path, date_value, *date_columns)
+    if count <= 0:
+        raise RuntimeError(f"Expected at least one row in {path} for {date_value}")
+    return count
+
+
+def next_day(value: date) -> date:
+    return value + timedelta(days=1)
+
+
+def current_log_paths(report_day: date) -> dict[str, Path]:
+    stamp = report_day.isoformat()
+    return {
+        "raw_props": PROPS_RAW_DIR / f"odds_slate_{stamp}.csv",
+        "market_lines": PROPS_MARKET_DIR / f"market_lines_{stamp}.csv",
+        "edges": EDGES_DIR / f"edges_with_market_{stamp}.csv",
+        "screener_log": RUN_LOG_DIR / f"star_best_bets_{stamp}.txt",
+        "game_lines": GAME_LINES_DIR / f"game_lines_{stamp}.csv",
+        "run_log": RUN_LOG_DIR / f"pipeline_{stamp}.json",
+    }
+
+
+def backfill_official_injuries(
+    *,
+    start_date: date,
+    end_date: date,
+    output_path: Path,
+    database_url: str,
+    cursor_path: Path,
+    reset_cursor: bool,
+) -> dict:
+    cursor = {} if reset_cursor else read_json(cursor_path)
+    current = start_date
+    if cursor.get("last_completed_date"):
+        current = max(current, next_day(date.fromisoformat(cursor["last_completed_date"])))
+
+    days_completed = 0
+    rows_persisted = 0
+    while current <= end_date:
+        report_df = fetch_official_injury_reports(report_date=current, latest_only=True)
+        rows_persisted += persist_official_injury_reports(report_df, output_path=output_path, database_url=database_url)
+        days_completed += 1
+        write_json(
+            cursor_path,
+            {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "last_completed_date": current.isoformat(),
+                "updated_at": utc_now_iso(),
+            },
+        )
+        current = next_day(current)
+    return {"days_completed": days_completed, "rows_persisted": rows_persisted, "cursor_path": str(cursor_path)}
+
+
+def backfill_game_odds(
+    *,
+    start_date: date,
+    end_date: date,
+    output_path: Path,
+    closing_output_path: Path,
+    database_url: str,
+    bookmakers: list[str],
+    cursor_path: Path,
+    reset_cursor: bool,
+) -> dict:
+    cursor = {} if reset_cursor else read_json(cursor_path)
+    api_key = get_odds_papi_api_key(None)
+    current = start_date
+    if cursor.get("last_completed_chunk_end"):
+        current = max(current, next_day(date.fromisoformat(cursor["last_completed_chunk_end"])))
+
+    chunks_completed = 0
+    snapshot_rows = 0
+    closing_rows = 0
+    while current <= end_date:
+        chunk_end = min(current + timedelta(days=6), end_date)
+        snapshots = fetch_historical_game_odds_snapshots(
+            start_date=current,
+            end_date=chunk_end,
+            api_key=api_key,
+            bookmakers=bookmakers,
+        )
+        s_count, c_count = persist_game_odds(
+            snapshots,
+            snapshots_output_path=output_path,
+            closing_output_path=closing_output_path,
+            database_url=database_url,
+        )
+        snapshot_rows += s_count
+        closing_rows += c_count
+        chunks_completed += 1
+        write_json(
+            cursor_path,
+            {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "last_completed_chunk_start": current.isoformat(),
+                "last_completed_chunk_end": chunk_end.isoformat(),
+                "updated_at": utc_now_iso(),
+            },
+        )
+        current = chunk_end + timedelta(days=1)
+    return {
+        "chunks_completed": chunks_completed,
+        "snapshot_rows": snapshot_rows,
+        "closing_rows": closing_rows,
+        "cursor_path": str(cursor_path),
+    }
+
+
+def build_prop_feature_stack() -> dict:
+    run_command(python_cmd("src/pipeline/update_player_game_logs_incremental.py"))
+    run_command(python_cmd("src/data/build_player_points_features.py"))
+    run_command(python_cmd("src/data/fetch_injury_data.py"))
+    injury_non_null, injury_share = build_features_with_injuries(
         features_csv=FEATURES_CSV,
         injury_csv=INJURY_DATA_CSV,
         out_csv=FEATURES_WITH_INJURIES_CSV,
     )
-
-    # 2c) Add lineup context features (teammates out / shorthandedness)
-    build_features_with_lineup_context(
+    lineup_non_zero, lineup_share = build_features_with_lineup_context(
         features_csv=FEATURES_WITH_INJURIES_CSV,
         out_csv=FEATURES_WITH_LINEUP_CSV,
     )
-
-    # 2d) Join ALL logged market_lines into the features table so props accumulate historically
-    # Use FEATURES_WITH_LINEUP_CSV as input so we have injuries + lineup context + props
-    build_features_with_props(
+    prop_non_null, prop_share = build_features_with_props(
         features_csv=FEATURES_WITH_LINEUP_CSV,
         market_dir=PROPS_MARKET_DIR,
         out_csv=FEATURES_WITH_PROPS_CSV,
     )
-
-    # 2d) Join ALL logged game_lines into the features table for Vegas lines features
-    # Use FEATURES_WITH_PROPS_CSV as input so final file has injuries + props + Vegas
-    build_features_with_vegas_lines(
+    vegas_non_null, vegas_share = build_features_with_vegas_lines(
         features_csv=FEATURES_WITH_PROPS_CSV,
         game_lines_dir=GAME_LINES_DIR,
         out_csv=FEATURES_WITH_VEGAS_CSV,
     )
+    return {
+        "injury_non_null": injury_non_null,
+        "injury_share": injury_share,
+        "lineup_non_zero": lineup_non_zero,
+        "lineup_share": lineup_share,
+        "prop_non_null": prop_non_null,
+        "prop_share": prop_share,
+        "vegas_non_null": vegas_non_null,
+        "vegas_share": vegas_share,
+    }
 
-    # 3) Train minutes regression model
-    run(
+
+def train_prop_models() -> None:
+    run_command(
         [
-            "python",
-            "src/models/build_minutes_regression.py",
+            *python_cmd("src/models/build_minutes_regression.py"),
             "--model-type",
             MODEL_TYPE,
             "--train-max-season",
             TRAIN_MAX_SEASON,
             "--val-min-season",
             VAL_MIN_SEASON,
-        ],
-        desc=(
-            f"Step 3/9: Training minutes regression model "
-            f"(model_type={MODEL_TYPE}, train <= {TRAIN_MAX_SEASON}, val >= {VAL_MIN_SEASON})"
-        ),
+        ]
     )
-
-    # 4) Retrain points regression model WITH prop features and minutes prediction enabled
-    # Use FEATURES_WITH_VEGAS_CSV which contains both props and Vegas lines
-    run(
+    run_command(
         [
-            "python",
-            "src/models/build_points_regression.py",
+            *python_cmd("src/models/build_points_regression.py"),
+            "--features-csv",
+            str(FEATURES_WITH_VEGAS_CSV),
+            "--model-path",
+            "models/points_regression_no_props.pkl",
+            "--val-preds-out",
+            "data/points_regression_no_props_val_preds.csv",
+            "--model-type",
+            MODEL_TYPE,
+            "--train-max-season",
+            TRAIN_MAX_SEASON,
+            "--val-min-season",
+            VAL_MIN_SEASON,
+            "--tune-hyperparams",
+            "--n-tune-iter",
+            N_TUNE_ITER,
+            "--use-minutes-pred",
+        ]
+    )
+    run_command(
+        [
+            *python_cmd("src/models/build_points_regression.py"),
             "--features-csv",
             str(FEATURES_WITH_VEGAS_CSV),
             "--model-type",
@@ -670,133 +893,134 @@ def main():
             "--use-prop-features",
             "--use-prop-derived-features",
             "--use-minutes-pred",
-        ],
-        desc=(
-            f"Step 4/9: Training points regression model with prop features + minutes prediction "
-            f"(model_type={MODEL_TYPE}, train <= {TRAIN_MAX_SEASON}, val >= {VAL_MIN_SEASON})"
-        ),
+            "--model-baseline-path",
+            "models/points_regression_no_props.pkl",
+        ]
+    )
+    for target_col, model_out, val_out in [
+        ("target_reb", "models/rebounds_regression.pkl", "data/rebounds_regression_val_preds.csv"),
+        ("target_ast", "models/assists_regression.pkl", "data/assists_regression_val_preds.csv"),
+        ("target_fg3m", "models/threes_regression.pkl", "data/threes_regression_val_preds.csv"),
+    ]:
+        run_command(
+            [
+                *python_cmd("src/models/build_points_regression.py"),
+                "--features-csv",
+                str(FEATURES_WITH_VEGAS_CSV),
+                "--target-col",
+                target_col,
+                "--model-path",
+                model_out,
+                "--val-preds-out",
+                val_out,
+                "--model-type",
+                MODEL_TYPE,
+                "--train-max-season",
+                TRAIN_MAX_SEASON,
+                "--val-min-season",
+                VAL_MIN_SEASON,
+            ]
+        )
+
+
+def train_game_models(database_url: str) -> None:
+    run_command(
+        [
+            *python_cmd("src/jobs/train_game_market_models.py"),
+            "--logs-csv",
+            str(Path("data/player_game_logs.csv")),
+            "--injuries-csv",
+            str(OFFICIAL_INJURIES_CSV),
+            "--starters-csv",
+            str(STARTER_HISTORY_CSV),
+            "--models-dir",
+            "models",
+            "--metrics-out",
+            str(Path("data/game_market_model_metrics.csv")),
+        ]
     )
 
-    # 4b) Train quantile regression models (Phase 4B: 10th, 50th, 90th percentiles)
-    run(
-        [
-            "python",
-            "src/models/build_points_regression_quantile.py",
-            "--features-csv",
-            str(FEATURES_WITH_VEGAS_CSV),
-            "--train-max-season",
-            TRAIN_MAX_SEASON,
-            "--val-min-season",
-            VAL_MIN_SEASON,
-        ],
-        desc=(
-            f"Step 4b/9: Training quantile regression models (10th, 50th, 90th percentiles) "
-            f"(train <= {TRAIN_MAX_SEASON}, val >= {VAL_MIN_SEASON})"
-        ),
-    )
 
-    # 4c) Train tiered models (separate models for each player tier)
-    run(
-        [
-            "python",
-            "src/models/build_points_regression_tiered.py",
-            "--features-csv",
-            str(FEATURES_WITH_VEGAS_CSV),
-            "--model-type",
-            MODEL_TYPE,
-            "--train-max-season",
-            TRAIN_MAX_SEASON,
-            "--val-min-season",
-            VAL_MIN_SEASON,
-            "--tune-hyperparams",
-            "--n-tune-iter",
-            str(int(N_TUNE_ITER) // 2),  # Fewer iterations per tier
-        ],
-        desc=(
-            f"Step 4c/9: Training tiered models (tiers 0-3) "
-            f"(model_type={MODEL_TYPE}, train <= {TRAIN_MAX_SEASON}, val >= {VAL_MIN_SEASON})"
-        ),
-    )
+def refresh_starter_history(database_url: str) -> dict:
+    logs_df = pd.read_csv("data/player_game_logs.csv")
+    existing_game_ids = []
+    if STARTER_HISTORY_CSV.exists():
+        existing_game_ids = pd.read_csv(STARTER_HISTORY_CSV)["game_id"].astype(str).dropna().unique().tolist()
+    frame = build_starter_history_frame(logs_df, existing_game_ids=existing_game_ids)
+    count = persist_starter_history(frame, output_path=STARTER_HISTORY_CSV, database_url=database_url)
+    return {"rows_persisted": count}
 
-    # 5) Train sigma model (heteroscedastic variance)
-    # Use FEATURES_WITH_VEGAS_CSV to match the features used in main model
-    run(
-        [
-            "python",
-            "src/models/build_points_sigma_model.py",
-            "--features-csv",
-            str(FEATURES_WITH_VEGAS_CSV),
-            "--train-max-season",
-            TRAIN_MAX_SEASON,
-        ],
-        desc="Step 5/9: Training sigma (variance) model for player points",
-    )
 
-    # 6) Refit over/under probability calibrator
-    # Use FEATURES_WITH_VEGAS_CSV to match the features used in main model
-    run(
-        [
-            "python",
-            "src/models/build_over_prob_calibrator.py",
-            "--features-csv",
-            str(FEATURES_WITH_VEGAS_CSV),
-        ],
-        desc="Step 6/9: Fitting over-probability calibrator on recent seasons",
-    )
+def ingest_official_injuries_for_day(report_day: date, database_url: str) -> dict:
+    report_df = fetch_official_injury_reports(report_date=report_day, latest_only=True)
+    count = persist_official_injury_reports(report_df, output_path=OFFICIAL_INJURIES_CSV, database_url=database_url)
+    return {"rows_persisted": count}
 
-    # 7) Fetch fresh props (points+reb+ast+3PM) AND game lines (keeps your existing default output: data/odds_slate.csv)
-    run(
+
+def build_lineups_for_day(report_day: date, database_url: str) -> dict:
+    starter_history_df = pd.read_csv(STARTER_HISTORY_CSV) if STARTER_HISTORY_CSV.exists() else pd.DataFrame()
+    logs_df = pd.read_csv("data/player_game_logs.csv")
+    injuries_df = pd.read_csv(OFFICIAL_INJURIES_CSV) if OFFICIAL_INJURIES_CSV.exists() else pd.DataFrame()
+    positions_df = pd.read_csv(PLAYER_POSITIONS_CSV) if PLAYER_POSITIONS_CSV.exists() else pd.DataFrame()
+    frame = build_lineup_projection_frame(
+        target_date=report_day,
+        starter_history_df=starter_history_df,
+        logs_df=logs_df,
+        injuries_df=injuries_df,
+        player_positions_df=positions_df,
+    )
+    count = persist_lineup_projections(frame, output_path=LINEUP_PROJECTIONS_CSV, database_url=database_url)
+    return {"rows_persisted": count}
+
+
+def ingest_current_game_odds(report_day: date, database_url: str, bookmakers: list[str]) -> dict:
+    snapshots = fetch_current_game_odds_snapshots(
+        report_date=report_day,
+        api_key=get_odds_papi_api_key(None),
+        bookmakers=bookmakers,
+    )
+    snapshot_count, closing_count = persist_game_odds(
+        snapshots,
+        snapshots_output_path=GAME_ODDS_SNAPSHOTS_CSV,
+        closing_output_path=CLOSING_LINES_CSV,
+        database_url=database_url,
+    )
+    return {"snapshot_rows": snapshot_count, "closing_rows": closing_count}
+
+
+def fetch_current_props_and_market_lines(report_day: date, dated_paths: dict[str, Path]) -> dict:
+    run_command(
         [
-            "python",
-            "src/data/fetch_props_from_the_odds_api.py",
+            *python_cmd("src/data/fetch_props_from_the_odds_api.py"),
             "--markets",
             "player_points,player_rebounds,player_assists,player_threes",
-        ],
-        desc="Step 7/9: Fetching fresh props and game lines into data/odds_slate.csv and data/game_lines.csv",
+        ]
     )
-
-    # 7b) Log raw odds slate to dated file
     if LATEST_ODDS_SLATE.exists():
-        shutil.copyfile(LATEST_ODDS_SLATE, raw_props_dated)
-        print(f"[INFO] Saved dated raw props: {raw_props_dated}")
-    else:
-        print(f"[WARN] Expected {LATEST_ODDS_SLATE} but it does not exist. Skipping dated raw props save.")
-
-    # 7b2) Log game lines to dated file (NEW: for Vegas lines features)
+        shutil.copyfile(LATEST_ODDS_SLATE, dated_paths["raw_props"])
     if LATEST_GAME_LINES.exists():
-        shutil.copyfile(LATEST_GAME_LINES, game_lines_dated)
-        print(f"[INFO] Saved dated game lines: {game_lines_dated}")
-    else:
-        print(f"[WARN] Expected {LATEST_GAME_LINES} but it does not exist. Skipping dated game lines save.")
-
-    # 7c) Build market lines (ALL markets) from the latest odds slate
-    run(
+        shutil.copyfile(LATEST_GAME_LINES, dated_paths["game_lines"])
+    run_command(
         [
-            "python",
-            "src/data/props_to_market_lines.py",
+            *python_cmd("src/data/props_to_market_lines.py"),
             "--odds-slate",
             str(LATEST_ODDS_SLATE),
             "--output",
-            str(market_lines_dated),
-        ],
-        desc="Step 7b/9: Aggregating raw props into market lines (dated file)",
+            str(dated_paths["market_lines"]),
+        ]
     )
+    if dated_paths["market_lines"].exists():
+        shutil.copyfile(dated_paths["market_lines"], LATEST_MARKET_LINES)
+    return {
+        "raw_props_path": str(dated_paths["raw_props"]),
+        "market_lines_path": str(dated_paths["market_lines"]),
+    }
 
-    # Keep a “latest” market_lines.csv for other scripts
-    if market_lines_dated.exists():
-        shutil.copyfile(market_lines_dated, LATEST_MARKET_LINES)
-        print(f"[INFO] Updated latest market lines: {LATEST_MARKET_LINES}")
 
-    # 7d) Scan slate with per-market models vs market to produce edges (dated + latest)
-    # Uses:
-    #  - points: models/points_regression.pkl (and optional points-only sigma/calibrator if enabled)
-    #  - rebounds: models/rebounds_regression.pkl
-    #  - assists: models/assists_regression.pkl
-    #  - threes: models/threes_regression.pkl
-    run(
+def score_and_materialize_live_props(report_day: date, database_url: str, dated_paths: dict[str, Path]) -> dict:
+    run_command(
         [
-            "python",
-            "src/inference/scan_slate_with_model.py",
+            *python_cmd("src/inference/scan_slate_with_model.py"),
             "--model-paths",
             "player_points=models/points_regression.pkl,player_rebounds=models/rebounds_regression.pkl,player_assists=models/assists_regression.pkl,player_threes=models/threes_regression.pkl",
             "--features-csv",
@@ -804,26 +1028,82 @@ def main():
             "--market-lines",
             str(LATEST_MARKET_LINES),
             "--output",
-            str(edges_dated),
+            str(dated_paths["edges"]),
             "--min-edge",
             "0.03",
-        ],
-        desc="Step 7c/9: Scanning slate with per-market models to compute edges (dated file)",
+        ]
     )
+    if dated_paths["edges"].exists():
+        shutil.copyfile(dated_paths["edges"], LATEST_EDGES)
+    scored_count, _ = materialize_edges(
+        LATEST_EDGES,
+        database_url=database_url,
+        recommendation_origin="live_daily",
+        persist_readiness=False,
+    )
+    return {"rows_materialized": scored_count}
 
-    if edges_dated.exists():
-        shutil.copyfile(edges_dated, LATEST_EDGES)
-        print(f"[INFO] Updated latest edges file: {LATEST_EDGES}")
 
-    # Note: Props and Vegas lines are now joined BEFORE model training (steps 2a-2b)
-    # This ensures they're available for training. The joins above are kept for
-    # historical accumulation but the main training uses the files created earlier.
+def score_and_materialize_live_game_markets(report_day: date, database_url: str, bookmakers: list[str]) -> dict:
+    logs_df = pd.read_csv("data/player_game_logs.csv")
+    odds_df = pd.read_csv(GAME_ODDS_SNAPSHOTS_CSV)
+    injuries_df = pd.read_csv(OFFICIAL_INJURIES_CSV) if OFFICIAL_INJURIES_CSV.exists() else pd.DataFrame()
+    starter_history_df = pd.read_csv(STARTER_HISTORY_CSV) if STARTER_HISTORY_CSV.exists() else pd.DataFrame()
+    lineup_df = pd.read_csv(LINEUP_PROJECTIONS_CSV) if LINEUP_PROJECTIONS_CSV.exists() else pd.DataFrame()
+    sportsbook = bookmakers[0] if bookmakers else None
+    frame = build_game_market_recommendations(
+        logs_df=logs_df,
+        odds_snapshots_df=odds_df,
+        models_dir=Path("models"),
+        sportsbook=sportsbook,
+        target_date=report_day.isoformat(),
+        min_edge=0.03,
+        injuries_df=injuries_df,
+        lineup_df=lineup_df,
+        starter_history_df=starter_history_df,
+    )
+    if frame.empty:
+        raise RuntimeError(f"No game-market recommendations were produced for {report_day.isoformat()}")
+    frame["recommendation_origin"] = "live_daily"
+    LATEST_GAME_MARKET_RECOMMENDATIONS.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(LATEST_GAME_MARKET_RECOMMENDATIONS, index=False)
+    scored_count, _ = materialize_edges(
+        LATEST_GAME_MARKET_RECOMMENDATIONS,
+        database_url=database_url,
+        recommendation_origin="live_daily",
+        persist_readiness=False,
+    )
+    return {"rows_materialized": scored_count}
 
-    # 8) Run star best bets screener (and log output)
-    run(
+
+def settle_and_refresh_readiness(database_url: str) -> dict:
+    run_command(
         [
-            "python",
-            "src/inference/star_best_bets_screener.py",
+            *python_cmd("src/jobs/settle_recommendations.py"),
+            "--logs-csv",
+            "data/player_game_logs.csv",
+            "--database-url",
+            database_url,
+        ]
+    )
+    run_command(
+        [
+            *python_cmd("src/jobs/build_market_readiness_snapshot.py"),
+            "--database-url",
+            database_url,
+            "--models-dir",
+            "models",
+            "--output",
+            str(LATEST_MARKET_READINESS),
+        ]
+    )
+    return {"readiness_path": str(LATEST_MARKET_READINESS)}
+
+
+def run_star_screener(dated_paths: dict[str, Path]) -> dict:
+    run_command(
+        [
+            *python_cmd("src/inference/star_best_bets_screener.py"),
             "--auto-stars",
             "--odds-file",
             "data/odds_slate.csv",
@@ -844,12 +1124,188 @@ def main():
             "--target-prob",
             TARGET_PROB,
         ],
-        desc="Step 8/9: Running star_best_bets_screener on the latest slate",
-        stdout_path=screener_log,
+        stdout_path=dated_paths["screener_log"],
     )
+    return {"screener_log": str(dated_paths["screener_log"])}
 
-    print(f"\n[INFO] Screener output saved to: {screener_log}")
-    print("\n✅ Pipeline completed successfully.\n")
+
+def replay_historical_range(
+    *,
+    start_date: date,
+    end_date: date,
+    database_url: str,
+    reset_cursor: bool,
+) -> dict:
+    command = [
+        *python_cmd("src/jobs/replay_historical_recommendations.py"),
+        "--start-date",
+        start_date.isoformat(),
+        "--end-date",
+        end_date.isoformat(),
+        "--database-url",
+        database_url,
+        "--cursor-path",
+        str(HISTORICAL_REPLAY_CURSOR),
+    ]
+    if reset_cursor:
+        command.append("--reset-cursor")
+    run_command(command)
+    return {"cursor_path": str(HISTORICAL_REPLAY_CURSOR)}
+
+
+def run_daily_mode(report_day: date, database_url: str, bookmakers: list[str], run_log: dict, *, skip_star_screener: bool) -> None:
+    dated_paths = current_log_paths(report_day)
+    execute_step(run_log, "build_prop_feature_stack", build_prop_feature_stack, strict=True)
+    execute_step(run_log, "ingest_official_injuries", lambda: ingest_official_injuries_for_day(report_day, database_url), strict=True)
+    require_rows(OFFICIAL_INJURIES_CSV, report_day.isoformat(), "report_date", "game_date")
+    execute_step(run_log, "refresh_starter_history", lambda: refresh_starter_history(database_url), strict=True)
+    execute_step(run_log, "build_lineup_projections", lambda: build_lineups_for_day(report_day, database_url), strict=True)
+    require_rows(LINEUP_PROJECTIONS_CSV, report_day.isoformat(), "game_date")
+    execute_step(run_log, "ingest_current_game_odds", lambda: ingest_current_game_odds(report_day, database_url, bookmakers), strict=True)
+    require_rows(GAME_ODDS_SNAPSHOTS_CSV, report_day.isoformat(), "game_date")
+    execute_step(run_log, "fetch_current_props", lambda: fetch_current_props_and_market_lines(report_day, dated_paths), strict=True)
+    require_rows(dated_paths["market_lines"], report_day.isoformat(), "game_date")
+    execute_step(run_log, "score_materialize_live_props", lambda: score_and_materialize_live_props(report_day, database_url, dated_paths), strict=True)
+    execute_step(run_log, "score_materialize_live_game_markets", lambda: score_and_materialize_live_game_markets(report_day, database_url, bookmakers), strict=True)
+    execute_step(run_log, "settle_refresh_readiness", lambda: settle_and_refresh_readiness(database_url), strict=True)
+    if not skip_star_screener:
+        execute_step(run_log, "star_best_bets_screener", lambda: run_star_screener(dated_paths), strict=False)
+
+
+def run_bootstrap_or_backfill_mode(
+    *,
+    mode: str,
+    report_day: date,
+    backfill_start: date,
+    backfill_end: date,
+    database_url: str,
+    bookmakers: list[str],
+    run_log: dict,
+    skip_prop_training: bool,
+    skip_game_training: bool,
+    publish_current_day_at_end: bool,
+    reset_cursors: bool,
+    skip_star_screener: bool,
+) -> None:
+    if mode == "bootstrap":
+        execute_step(run_log, "init_database", lambda: {"database_url": str(init_database(database_url).url)}, strict=True)
+    execute_step(
+        run_log,
+        "backfill_official_injuries",
+        lambda: backfill_official_injuries(
+            start_date=backfill_start,
+            end_date=backfill_end,
+            output_path=OFFICIAL_INJURIES_CSV,
+            database_url=database_url,
+            cursor_path=INJURY_BACKFILL_CURSOR,
+            reset_cursor=reset_cursors,
+        ),
+        strict=False,
+    )
+    execute_step(run_log, "refresh_starter_history", lambda: refresh_starter_history(database_url), strict=False)
+    execute_step(
+        run_log,
+        "backfill_game_odds",
+        lambda: backfill_game_odds(
+            start_date=backfill_start,
+            end_date=backfill_end,
+            output_path=GAME_ODDS_SNAPSHOTS_CSV,
+            closing_output_path=CLOSING_LINES_CSV,
+            database_url=database_url,
+            bookmakers=bookmakers,
+            cursor_path=GAME_ODDS_BACKFILL_CURSOR,
+            reset_cursor=reset_cursors,
+        ),
+        strict=False,
+    )
+    execute_step(run_log, "build_prop_feature_stack", build_prop_feature_stack, strict=False)
+    if not skip_prop_training:
+        execute_step(run_log, "train_prop_models", lambda: (train_prop_models(), {"trained": "prop_models"})[1], strict=False)
+    if not skip_game_training:
+        execute_step(run_log, "train_game_models", lambda: (train_game_models(database_url), {"trained": "game_models"})[1], strict=False)
+    execute_step(
+        run_log,
+        "replay_historical_recommendations",
+        lambda: replay_historical_range(
+            start_date=backfill_start,
+            end_date=backfill_end,
+            database_url=database_url,
+            reset_cursor=reset_cursors,
+        ),
+        strict=False,
+    )
+    execute_step(run_log, "settle_refresh_readiness", lambda: settle_and_refresh_readiness(database_url), strict=False)
+    if mode == "bootstrap" and publish_current_day_at_end:
+        run_daily_mode(
+            report_day,
+            database_url,
+            bookmakers,
+            run_log,
+            skip_star_screener=skip_star_screener,
+        )
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    print(f"Running pipeline from: {PROJECT_ROOT}")
+    if PROJECT_ROOT != Path.cwd():
+        print(f"Changing working directory to: {PROJECT_ROOT}")
+        os.chdir(PROJECT_ROOT)
+
+    ensure_runtime_dirs()
+    report_day = date.fromisoformat(args.report_date)
+    default_start, default_end = default_backfill_window(report_day)
+    backfill_start = date.fromisoformat(args.backfill_start_date) if args.backfill_start_date else default_start
+    backfill_end = date.fromisoformat(args.backfill_end_date) if args.backfill_end_date else default_end
+    database_url = get_database_url(args.database_url)
+    bookmakers = [item.strip() for item in args.bookmakers.split(",") if item.strip()]
+
+    run_log = {
+        "mode": args.mode,
+        "report_date": report_day.isoformat(),
+        "backfill_start_date": backfill_start.isoformat(),
+        "backfill_end_date": backfill_end.isoformat(),
+        "database_url": database_url,
+        "bookmakers": bookmakers,
+        "started_at": utc_now_iso(),
+        "steps": [],
+        "warnings": [],
+    }
+    log_path = current_log_paths(report_day)["run_log"]
+
+    try:
+        if args.mode == "daily":
+            run_daily_mode(
+                report_day,
+                database_url,
+                bookmakers,
+                run_log,
+                skip_star_screener=bool(args.skip_star_screener),
+            )
+        else:
+            run_bootstrap_or_backfill_mode(
+                mode=args.mode,
+                report_day=report_day,
+                backfill_start=backfill_start,
+                backfill_end=backfill_end,
+                database_url=database_url,
+                bookmakers=bookmakers,
+                run_log=run_log,
+                skip_prop_training=bool(args.skip_prop_training),
+                skip_game_training=bool(args.skip_game_training),
+                publish_current_day_at_end=bool(args.publish_current_day_at_end),
+                reset_cursors=bool(args.reset_cursors),
+                skip_star_screener=bool(args.skip_star_screener),
+            )
+        run_log["status"] = "completed"
+    except Exception as exc:
+        run_log["status"] = "failed"
+        run_log["error"] = str(exc)
+        raise
+    finally:
+        run_log["finished_at"] = utc_now_iso()
+        write_json(log_path, run_log)
+        print(f"[INFO] Wrote structured pipeline log: {log_path}")
 
 
 if __name__ == "__main__":

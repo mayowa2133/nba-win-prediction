@@ -12,8 +12,12 @@ We keep this change only if MAE improves (and R² does not regress materially).
 
 import argparse
 import pickle
+import sys
 from pathlib import Path
 from typing import Dict, List
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 import pandas as pd
@@ -42,7 +46,7 @@ def load_bundle(path: Path) -> Dict:
 def ensure_minutes_pred(df: pd.DataFrame) -> None:
     if "minutes_pred" in df.columns:
         return
-    from build_points_regression import add_minutes_pred_feature
+    from src.models.build_points_regression import add_minutes_pred_feature
 
     ok = add_minutes_pred_feature(df, Path("models/minutes_regression.pkl"))
     if not ok:
@@ -156,5 +160,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

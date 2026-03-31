@@ -5,7 +5,9 @@ Wrapper script to run the full pipeline from the project root.
 This script simply calls the main pipeline script in src/pipeline/.
 You can run it from the project root:
 
-    python run_pipeline.py
+    python run_pipeline.py --mode daily
+    python run_pipeline.py --mode bootstrap --publish-current-day-at-end
+    python run_pipeline.py --mode backfill-only --backfill-start-date 2025-10-01 --backfill-end-date 2026-03-30
 
 Or directly:
 
@@ -27,4 +29,3 @@ if __name__ == "__main__":
     
     # Run the pipeline script with all arguments passed through
     sys.exit(subprocess.run([sys.executable, str(pipeline_script)] + sys.argv[1:]).returncode)
-
