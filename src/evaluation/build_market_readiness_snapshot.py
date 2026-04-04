@@ -55,6 +55,7 @@ def _load_recommendations(database_url: Optional[str], csv_path: Path) -> pd.Dat
                     "result": row.result,
                     "clv": row.clv,
                     "roi": row.roi,
+                    "quote_source_provider": row.quote_source_provider,
                 }
                 for row in rows
             ]
@@ -183,6 +184,7 @@ def build_readiness_rows(
         historical_sample_size = 0
         live_clv_sample_size = 0
         evidence_mode = "historical_only"
+        live_quote_source = None
         if not settled.empty and "recommendation_origin" in settled.columns:
             historical_sample_size = int((settled["recommendation_origin"].astype(str) == "historical_replay").sum())
             live_clv_sample_size = int(
@@ -194,6 +196,18 @@ def build_readiness_rows(
             )
             if live_clv_sample_size > 0:
                 evidence_mode = "historical_plus_live"
+            if "quote_source_provider" in settled.columns:
+                live_sources = (
+                    settled.loc[
+                        settled["recommendation_origin"].astype(str) == "live_daily",
+                        "quote_source_provider",
+                    ]
+                    .astype(str)
+                    .replace("", pd.NA)
+                    .dropna()
+                )
+                if not live_sources.empty:
+                    live_quote_source = str(live_sources.value_counts().idxmax())
         if max_game_date is not None and not settled.empty and pd.notna(max_game_date):
             trailing_30_start = max_game_date - timedelta(days=30)
             trailing_30 = _window_metrics(settled[settled["game_date"] >= trailing_30_start].copy())
@@ -228,6 +242,7 @@ def build_readiness_rows(
                         "evidence_mode": evidence_mode,
                         "historical_sample_size": historical_sample_size,
                         "live_clv_sample_size": live_clv_sample_size,
+                        "live_quote_source": live_quote_source,
                         "source_coverage": training_row.get("source_coverage") if training_row is not None else math.nan,
                         "moneyline_coverage_rate": training_row.get("moneyline_coverage_rate") if training_row is not None else math.nan,
                         "training_metrics": training_row.to_dict() if training_row is not None else {},

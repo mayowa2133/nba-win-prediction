@@ -363,6 +363,12 @@ def persist_game_odds(
                     market_name=str(row.get("market_name") or ""),
                     is_historical=int(row.get("is_historical") or 0),
                     source_url=str(row.get("source_url") or ""),
+                    source_provider=str(row.get("source_provider") or ""),
+                    source_mode=str(row.get("source_mode") or ""),
+                    source_page_url=str(row.get("source_page_url") or ""),
+                    source_book=str(row.get("source_book") or row.get("sportsbook") or ""),
+                    is_consensus_quote=int(row.get("is_consensus_quote") or 0),
+                    page_snapshot_at=str(row.get("page_snapshot_at") or row.get("captured_at") or ""),
                     snapshot_type=str(row.get("snapshot_type") or "intraday"),
                     captured_at=str(row["captured_at"]),
                 )
@@ -384,6 +390,12 @@ def persist_game_odds(
                     sportsbook=str(row["sportsbook"]),
                     line_value=float(row.get("line_value") or 0.0),
                     price=float(row["price"]) if row.get("price") not in {"", None} else None,
+                    source_provider=str(row.get("source_provider") or ""),
+                    source_mode=str(row.get("source_mode") or ""),
+                    source_page_url=str(row.get("source_page_url") or ""),
+                    source_book=str(row.get("source_book") or row.get("sportsbook") or ""),
+                    is_consensus_quote=int(row.get("is_consensus_quote") or 0),
+                    page_snapshot_at=str(row.get("page_snapshot_at") or row.get("closing_captured_at") or ""),
                     captured_at=str(row["closing_captured_at"]),
                 )
             )

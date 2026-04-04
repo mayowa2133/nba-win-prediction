@@ -1030,6 +1030,16 @@ def evaluate_slate(
             "implied_p_under": implied_under,
             "edge_over": edge_over,
             "edge_under": edge_under,
+            "best_over_source_provider": row.get("best_over_source_provider"),
+            "best_under_source_provider": row.get("best_under_source_provider"),
+            "best_over_source_mode": row.get("best_over_source_mode"),
+            "best_under_source_mode": row.get("best_under_source_mode"),
+            "best_over_source_book": row.get("best_over_source_book", row.get("best_over_book")),
+            "best_under_source_book": row.get("best_under_source_book", row.get("best_under_book")),
+            "best_over_source_page_url": row.get("best_over_source_page_url"),
+            "best_under_source_page_url": row.get("best_under_source_page_url"),
+            "best_over_page_snapshot_at": row.get("best_over_page_snapshot_at"),
+            "best_under_page_snapshot_at": row.get("best_under_page_snapshot_at"),
             # debug columns
             "is_home_used": overrides.get("is_home", feat_row.get("is_home", np.nan)),
             "days_rest_used": overrides.get("days_since_last_game", feat_row.get("days_since_last_game", np.nan)),
@@ -1067,6 +1077,32 @@ def evaluate_slate(
 
     side_info = df_out.apply(pick_side, axis=1)
     df_out = pd.concat([df_out, side_info], axis=1)
+
+    df_out["quote_source_provider"] = np.where(
+        df_out["best_side"] == "under",
+        df_out.get("best_under_source_provider", pd.Series("", index=df_out.index)),
+        df_out.get("best_over_source_provider", pd.Series("", index=df_out.index)),
+    )
+    df_out["quote_source_mode"] = np.where(
+        df_out["best_side"] == "under",
+        df_out.get("best_under_source_mode", pd.Series("", index=df_out.index)),
+        df_out.get("best_over_source_mode", pd.Series("", index=df_out.index)),
+    )
+    df_out["quote_source_book"] = np.where(
+        df_out["best_side"] == "under",
+        df_out.get("best_under_source_book", pd.Series("", index=df_out.index)),
+        df_out.get("best_over_source_book", pd.Series("", index=df_out.index)),
+    )
+    df_out["quote_source_page_url"] = np.where(
+        df_out["best_side"] == "under",
+        df_out.get("best_under_source_page_url", pd.Series("", index=df_out.index)),
+        df_out.get("best_over_source_page_url", pd.Series("", index=df_out.index)),
+    )
+    df_out["quote_page_snapshot_at"] = np.where(
+        df_out["best_side"] == "under",
+        df_out.get("best_under_page_snapshot_at", pd.Series("", index=df_out.index)),
+        df_out.get("best_over_page_snapshot_at", pd.Series("", index=df_out.index)),
+    )
 
     df_out = df_out[df_out["best_edge"] >= min_edge].copy()
     df_out = df_out.sort_values("best_edge", ascending=False)

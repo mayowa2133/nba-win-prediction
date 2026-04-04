@@ -17,6 +17,7 @@ import numpy as np
 
 from src.data.build_lineup_projections import build_lineup_projection_frame, persist_lineup_projections
 from src.data.build_starter_history import build_starter_history_frame, persist_starter_history
+from src.data.fetch_props_from_the_odds_api import write_csv as write_prop_slate_csv
 from src.data.historical_game_odds import (
     DEFAULT_CANONICAL_HISTORICAL_ODDS_CSV,
     DEFAULT_HISTORICAL_ODDS_CONFLICTS_CSV,
@@ -31,6 +32,17 @@ from src.data.historical_game_odds import (
 )
 from src.data.oddspapi_game_odds import persist_game_odds
 from src.data.official_injuries import fetch_official_injury_reports, persist_official_injury_reports
+from src.data.public_page_game_odds import fetch_espn_game_frames, fetch_scoresandodds_game_frames
+from src.data.public_page_props import (
+    SUPPORTED_PROP_MARKETS,
+    fetch_covers_prop_rows,
+    fetch_scoresandodds_prop_rows,
+)
+from src.data.sportsgameodds import (
+    fetch_sportsgameodds_game_frames,
+    fetch_sportsgameodds_prop_rows,
+    get_sportsgameodds_api_key,
+)
 from src.data.the_odds_api_game_odds import (
     DEFAULT_BOOKMAKERS,
     fetch_current_game_odds_snapshots,
@@ -58,6 +70,8 @@ TOP_K = "10"
 MIN_EDGE_DISPLAY = "5.0"
 LADDER_THRESHOLDS = "10,15,20,25,30,35,40"
 TARGET_PROB = "0.50"
+DEFAULT_GAME_ODDS_SOURCE = "scoresandodds"
+DEFAULT_PROPS_SOURCE = "scoresandodds"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 PYTHON_BIN = sys.executable
@@ -95,6 +109,20 @@ FEATURES_WITH_VEGAS_CSV = Path("data/player_points_features_with_vegas.csv")
 FEATURES_WITH_INJURIES_CSV = Path("data/player_points_features_with_injuries.csv")  # NEW: final features with all enhancements
 FEATURES_WITH_LINEUP_CSV = Path("data/player_points_features_with_lineup.csv")
 INJURY_DATA_CSV = Path("data/injury_data.csv")
+
+GAME_ODDS_SOURCE_FALLBACKS = {
+    "scoresandodds": ("scoresandodds", "espn"),
+    "espn": ("espn",),
+    "sportsgameodds": ("sportsgameodds",),
+    "the-odds-api": ("the-odds-api",),
+}
+
+PROPS_SOURCE_FALLBACKS = {
+    "scoresandodds": ("scoresandodds", "covers"),
+    "covers": ("covers",),
+    "sportsgameodds": ("sportsgameodds",),
+    "the-odds-api": ("the-odds-api",),
+}
 
 
 def run(cmd, desc=None, stdout_path: Path | None = None):
@@ -610,6 +638,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--database-url", default=None)
     parser.add_argument("--historical-odds-manifest", default=str(HISTORICAL_ODDS_MANIFEST))
     parser.add_argument("--bookmakers", default=",".join(DEFAULT_BOOKMAKERS))
+    parser.add_argument("--game-odds-source", choices=sorted(GAME_ODDS_SOURCE_FALLBACKS), default=DEFAULT_GAME_ODDS_SOURCE)
+    parser.add_argument("--props-source", choices=sorted(PROPS_SOURCE_FALLBACKS), default=DEFAULT_PROPS_SOURCE)
     parser.add_argument("--skip-star-screener", action="store_true")
     parser.add_argument("--skip-prop-training", action="store_true")
     parser.add_argument("--skip-game-training", action="store_true")
@@ -733,6 +763,14 @@ def current_log_paths(report_day: date) -> dict[str, Path]:
         "game_lines": GAME_LINES_DIR / f"game_lines_{stamp}.csv",
         "run_log": RUN_LOG_DIR / f"pipeline_{stamp}.json",
     }
+
+
+def write_current_game_lines(frame: pd.DataFrame, *, output_path: Path) -> int:
+    if frame.empty:
+        return 0
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(output_path, index=False)
+    return int(len(frame))
 
 
 def backfill_official_injuries(
@@ -956,12 +994,103 @@ def train_game_models(database_url: str) -> None:
     )
 
 
-def refresh_starter_history(database_url: str) -> dict:
+def active_teams_for_report_day(report_day: date, *, injuries_csv: Optional[Path] = None) -> list[str]:
+    injuries_csv = injuries_csv or OFFICIAL_INJURIES_CSV
+    if not injuries_csv.exists():
+        return []
+    try:
+        injuries = pd.read_csv(injuries_csv)
+    except Exception:
+        return []
+    if injuries.empty or "team_abbrev" not in injuries.columns:
+        return []
+
+    report_day_iso = report_day.isoformat()
+    mask = pd.Series(False, index=injuries.index)
+    for column in ("report_date", "game_date"):
+        if column in injuries.columns:
+            mask = mask | (injuries[column].astype(str) == report_day_iso)
+
+    teams = (
+        injuries.loc[mask, "team_abbrev"]
+        .dropna()
+        .astype(str)
+        .str.upper()
+        .str.strip()
+        .tolist()
+    )
+    return sorted({team for team in teams if team and team.lower() != "nan"})
+
+
+def limit_logs_to_recent_team_games(
+    logs_df: pd.DataFrame,
+    *,
+    report_day: date,
+    team_abbrevs: list[str],
+    recent_window_days: int,
+    recent_games_per_team: int,
+) -> pd.DataFrame:
+    if logs_df.empty:
+        return logs_df.copy()
+
+    logs = logs_df.copy()
+    if "game_date" in logs.columns:
+        logs["game_date"] = pd.to_datetime(logs["game_date"], errors="coerce")
+        recent_cutoff = pd.Timestamp(report_day - timedelta(days=recent_window_days))
+        logs = logs[logs["game_date"] >= recent_cutoff].copy()
+
+    if team_abbrevs and "team_abbrev" in logs.columns:
+        team_set = {str(team).upper() for team in team_abbrevs}
+        logs["team_abbrev"] = logs["team_abbrev"].astype(str).str.upper()
+        logs = logs[logs["team_abbrev"].isin(team_set)].copy()
+
+    if logs.empty:
+        return logs
+
+    required_columns = {"team_abbrev", "game_id", "game_date"}
+    if not required_columns.issubset(logs.columns):
+        return logs
+
+    recent_team_games = (
+        logs[["team_abbrev", "game_id", "game_date"]]
+        .drop_duplicates()
+        .sort_values(["team_abbrev", "game_date", "game_id"], ascending=[True, False, False])
+        .groupby("team_abbrev")
+        .head(recent_games_per_team)
+    )
+    limited = logs.merge(
+        recent_team_games[["team_abbrev", "game_id"]],
+        on=["team_abbrev", "game_id"],
+        how="inner",
+    )
+    return limited.sort_values(["game_date", "game_id"], ascending=[False, False]).copy()
+
+
+def refresh_starter_history(
+    database_url: str,
+    *,
+    report_day: Optional[date] = None,
+    recent_window_days: int = 21,
+    recent_games_per_team: int = 10,
+    max_games_if_missing: int = 30,
+) -> dict:
     logs_df = pd.read_csv("data/player_game_logs.csv")
+    max_games = None
+    if report_day is not None and not logs_df.empty and "game_date" in logs_df.columns:
+        active_teams = active_teams_for_report_day(report_day)
+        logs_df = limit_logs_to_recent_team_games(
+            logs_df,
+            report_day=report_day,
+            team_abbrevs=active_teams,
+            recent_window_days=recent_window_days,
+            recent_games_per_team=recent_games_per_team,
+        )
     existing_game_ids = []
     if STARTER_HISTORY_CSV.exists():
         existing_game_ids = pd.read_csv(STARTER_HISTORY_CSV)["game_id"].astype(str).dropna().unique().tolist()
-    frame = build_starter_history_frame(logs_df, existing_game_ids=existing_game_ids)
+    elif report_day is not None:
+        max_games = max_games_if_missing
+    frame = build_starter_history_frame(logs_df, existing_game_ids=existing_game_ids, max_games=max_games)
     count = persist_starter_history(frame, output_path=STARTER_HISTORY_CSV, database_url=database_url)
     return {"rows_persisted": count}
 
@@ -988,29 +1117,123 @@ def build_lineups_for_day(report_day: date, database_url: str) -> dict:
     return {"rows_persisted": count}
 
 
-def ingest_current_game_odds(report_day: date, database_url: str, bookmakers: list[str]) -> dict:
-    snapshots = fetch_current_game_odds_snapshots(
-        report_date=report_day,
-        api_key=get_the_odds_api_key(None),
-        bookmakers=bookmakers,
-    )
-    snapshot_count, closing_count = persist_game_odds(
-        snapshots,
-        snapshots_output_path=GAME_ODDS_SNAPSHOTS_CSV,
-        closing_output_path=CLOSING_LINES_CSV,
-        database_url=database_url,
-    )
-    return {"snapshot_rows": snapshot_count, "closing_rows": closing_count}
+def ingest_current_game_odds(
+    report_day: date,
+    database_url: str,
+    bookmakers: list[str],
+    source: str,
+) -> dict:
+    errors: list[str] = []
+    for candidate in GAME_ODDS_SOURCE_FALLBACKS[source]:
+        try:
+            game_lines_df = pd.DataFrame()
+            if candidate == "scoresandodds":
+                snapshots, game_lines_df = fetch_scoresandodds_game_frames(report_date=report_day)
+            elif candidate == "espn":
+                snapshots, game_lines_df = fetch_espn_game_frames(report_date=report_day)
+            elif candidate == "sportsgameodds":
+                snapshots, game_lines_df = fetch_sportsgameodds_game_frames(
+                    report_date=report_day,
+                    api_key=get_sportsgameodds_api_key(None),
+                    bookmakers=bookmakers,
+                )
+            elif candidate == "the-odds-api":
+                snapshots = fetch_current_game_odds_snapshots(
+                    report_date=report_day,
+                    api_key=get_the_odds_api_key(None),
+                    bookmakers=bookmakers,
+                )
+            else:  # pragma: no cover - guarded by argparse choices
+                raise RuntimeError(f"Unsupported game odds source: {candidate}")
+
+            if snapshots.empty:
+                raise RuntimeError(f"{candidate} returned no game odds snapshots for {report_day.isoformat()}")
+
+            snapshot_count, closing_count = persist_game_odds(
+                snapshots,
+                snapshots_output_path=GAME_ODDS_SNAPSHOTS_CSV,
+                closing_output_path=CLOSING_LINES_CSV,
+                database_url=database_url,
+            )
+            game_line_rows = write_current_game_lines(game_lines_df, output_path=LATEST_GAME_LINES) if not game_lines_df.empty else 0
+            return {
+                "snapshot_rows": snapshot_count,
+                "closing_rows": closing_count,
+                "game_line_rows": game_line_rows,
+                "source_used": candidate,
+            }
+        except Exception as exc:
+            errors.append(f"{candidate}: {exc}")
+
+    raise RuntimeError(" | ".join(errors) if errors else "No live game odds source succeeded")
 
 
-def fetch_current_props_and_market_lines(report_day: date, dated_paths: dict[str, Path]) -> dict:
-    run_command(
-        [
-            *python_cmd("src/data/fetch_props_from_the_odds_api.py"),
-            "--markets",
-            "player_points,player_rebounds,player_assists,player_threes",
-        ]
-    )
+def fetch_current_props_and_market_lines(
+    report_day: date,
+    dated_paths: dict[str, Path],
+    source: str,
+) -> dict:
+    errors: list[str] = []
+    rows_written = 0
+    source_used = None
+
+    for candidate in PROPS_SOURCE_FALLBACKS[source]:
+        try:
+            if candidate == "scoresandodds":
+                rows = fetch_scoresandodds_prop_rows(
+                    report_date=report_day,
+                    allowed_markets=SUPPORTED_PROP_MARKETS,
+                )
+                if not rows:
+                    raise RuntimeError(f"{candidate} returned no prop rows for {report_day.isoformat()}")
+                write_prop_slate_csv(rows, LATEST_ODDS_SLATE)
+                rows_written = len(rows)
+                source_used = candidate
+                break
+            if candidate == "covers":
+                rows = fetch_covers_prop_rows(
+                    report_date=report_day,
+                    allowed_markets=SUPPORTED_PROP_MARKETS,
+                )
+                if not rows:
+                    raise RuntimeError(f"{candidate} returned no prop rows for {report_day.isoformat()}")
+                write_prop_slate_csv(rows, LATEST_ODDS_SLATE)
+                rows_written = len(rows)
+                source_used = candidate
+                break
+            if candidate == "sportsgameodds":
+                rows = fetch_sportsgameodds_prop_rows(
+                    report_date=report_day,
+                    allowed_markets=SUPPORTED_PROP_MARKETS,
+                    api_key=get_sportsgameodds_api_key(None),
+                    bookmakers=DEFAULT_BOOKMAKERS,
+                )
+                if not rows:
+                    raise RuntimeError(f"{candidate} returned no prop rows for {report_day.isoformat()}")
+                write_prop_slate_csv(rows, LATEST_ODDS_SLATE)
+                rows_written = len(rows)
+                source_used = candidate
+                break
+            if candidate == "the-odds-api":
+                run_command(
+                    [
+                        *python_cmd("src/data/fetch_props_from_the_odds_api.py"),
+                        "--markets",
+                        "player_points,player_rebounds,player_assists,player_threes",
+                    ]
+                )
+                rows_written = int(len(pd.read_csv(LATEST_ODDS_SLATE))) if LATEST_ODDS_SLATE.exists() else 0
+                if rows_written <= 0:
+                    raise RuntimeError(f"{candidate} returned no prop rows for {report_day.isoformat()}")
+                source_used = candidate
+                break
+            raise RuntimeError(f"Unsupported props source: {candidate}")
+        except Exception as exc:
+            errors.append(f"{candidate}: {exc}")
+
+    if source_used is None:
+        raise RuntimeError(" | ".join(errors) if errors else "No live props source succeeded")
+
     if LATEST_ODDS_SLATE.exists():
         shutil.copyfile(LATEST_ODDS_SLATE, dated_paths["raw_props"])
     if LATEST_GAME_LINES.exists():
@@ -1029,6 +1252,8 @@ def fetch_current_props_and_market_lines(report_day: date, dated_paths: dict[str
     return {
         "raw_props_path": str(dated_paths["raw_props"]),
         "market_lines_path": str(dated_paths["market_lines"]),
+        "rows_written": rows_written,
+        "source_used": source_used,
     }
 
 
@@ -1060,6 +1285,15 @@ def score_and_materialize_live_props(report_day: date, database_url: str, dated_
 
 
 def score_and_materialize_live_game_markets(report_day: date, database_url: str, bookmakers: list[str]) -> dict:
+    models_dir = Path("models")
+    available_models = [
+        market
+        for market in ("game_moneyline", "game_spread", "game_total")
+        if (models_dir / f"{market}_model.pkl").exists()
+    ]
+    if not available_models:
+        return {"rows_materialized": 0, "status": "skipped_no_game_market_models"}
+
     logs_df = pd.read_csv("data/player_game_logs.csv")
     odds_df = pd.read_csv(GAME_ODDS_SNAPSHOTS_CSV)
     injuries_df = pd.read_csv(OFFICIAL_INJURIES_CSV) if OFFICIAL_INJURIES_CSV.exists() else pd.DataFrame()
@@ -1069,7 +1303,7 @@ def score_and_materialize_live_game_markets(report_day: date, database_url: str,
     frame = build_game_market_recommendations(
         logs_df=logs_df,
         odds_snapshots_df=odds_df,
-        models_dir=Path("models"),
+        models_dir=models_dir,
         sportsbook=sportsbook,
         target_date=report_day.isoformat(),
         min_edge=0.03,
@@ -1078,7 +1312,7 @@ def score_and_materialize_live_game_markets(report_day: date, database_url: str,
         starter_history_df=starter_history_df,
     )
     if frame.empty:
-        raise RuntimeError(f"No game-market recommendations were produced for {report_day.isoformat()}")
+        return {"rows_materialized": 0, "status": "skipped_no_game_market_recommendations"}
     frame["recommendation_origin"] = "live_daily"
     LATEST_GAME_MARKET_RECOMMENDATIONS.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(LATEST_GAME_MARKET_RECOMMENDATIONS, index=False)
@@ -1168,17 +1402,41 @@ def replay_historical_range(
     return {"cursor_path": str(HISTORICAL_REPLAY_CURSOR)}
 
 
-def run_daily_mode(report_day: date, database_url: str, bookmakers: list[str], run_log: dict, *, skip_star_screener: bool) -> None:
+def run_daily_mode(
+    report_day: date,
+    database_url: str,
+    bookmakers: list[str],
+    run_log: dict,
+    *,
+    game_odds_source: str,
+    props_source: str,
+    skip_star_screener: bool,
+) -> None:
     dated_paths = current_log_paths(report_day)
     execute_step(run_log, "build_prop_feature_stack", build_prop_feature_stack, strict=True)
     execute_step(run_log, "ingest_official_injuries", lambda: ingest_official_injuries_for_day(report_day, database_url), strict=True)
     require_rows(OFFICIAL_INJURIES_CSV, report_day.isoformat(), "report_date", "game_date")
-    execute_step(run_log, "refresh_starter_history", lambda: refresh_starter_history(database_url), strict=True)
+    execute_step(
+        run_log,
+        "refresh_starter_history",
+        lambda: refresh_starter_history(database_url, report_day=report_day),
+        strict=True,
+    )
     execute_step(run_log, "build_lineup_projections", lambda: build_lineups_for_day(report_day, database_url), strict=True)
     require_rows(LINEUP_PROJECTIONS_CSV, report_day.isoformat(), "game_date")
-    execute_step(run_log, "ingest_current_game_odds", lambda: ingest_current_game_odds(report_day, database_url, bookmakers), strict=True)
+    execute_step(
+        run_log,
+        "ingest_current_game_odds",
+        lambda: ingest_current_game_odds(report_day, database_url, bookmakers, game_odds_source),
+        strict=True,
+    )
     require_rows(GAME_ODDS_SNAPSHOTS_CSV, report_day.isoformat(), "game_date")
-    execute_step(run_log, "fetch_current_props", lambda: fetch_current_props_and_market_lines(report_day, dated_paths), strict=True)
+    execute_step(
+        run_log,
+        "fetch_current_props",
+        lambda: fetch_current_props_and_market_lines(report_day, dated_paths, props_source),
+        strict=True,
+    )
     require_rows(dated_paths["market_lines"], report_day.isoformat(), "game_date")
     execute_step(run_log, "score_materialize_live_props", lambda: score_and_materialize_live_props(report_day, database_url, dated_paths), strict=True)
     execute_step(run_log, "score_materialize_live_game_markets", lambda: score_and_materialize_live_game_markets(report_day, database_url, bookmakers), strict=True)
@@ -1196,6 +1454,8 @@ def run_bootstrap_or_backfill_mode(
     database_url: str,
     historical_manifest_path: Path,
     bookmakers: list[str],
+    game_odds_source: str,
+    props_source: str,
     run_log: dict,
     skip_prop_training: bool,
     skip_game_training: bool,
@@ -1257,6 +1517,8 @@ def run_bootstrap_or_backfill_mode(
             database_url,
             bookmakers,
             run_log,
+            game_odds_source=game_odds_source,
+            props_source=props_source,
             skip_star_screener=skip_star_screener,
         )
 
@@ -1285,6 +1547,8 @@ def main() -> None:
         "database_url": database_url,
         "historical_odds_manifest": str(historical_manifest_path),
         "bookmakers": bookmakers,
+        "game_odds_source": args.game_odds_source,
+        "props_source": args.props_source,
         "started_at": utc_now_iso(),
         "steps": [],
         "warnings": [],
@@ -1298,6 +1562,8 @@ def main() -> None:
                 database_url,
                 bookmakers,
                 run_log,
+                game_odds_source=args.game_odds_source,
+                props_source=args.props_source,
                 skip_star_screener=bool(args.skip_star_screener),
             )
         else:
@@ -1309,6 +1575,8 @@ def main() -> None:
                 database_url=database_url,
                 historical_manifest_path=historical_manifest_path,
                 bookmakers=bookmakers,
+                game_odds_source=args.game_odds_source,
+                props_source=args.props_source,
                 run_log=run_log,
                 skip_prop_training=bool(args.skip_prop_training),
                 skip_game_training=bool(args.skip_game_training),

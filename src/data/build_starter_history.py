@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+import re
 
 import pandas as pd
 from sqlalchemy import delete
@@ -24,11 +25,38 @@ class StarterRow:
     start_position: str
 
 
-def fetch_game_starters_from_api(game_id: str) -> List[dict]:
+DEFAULT_BOXSCORE_TIMEOUT_SECONDS = 10
+
+
+def normalize_boxscore_game_id(game_id: str) -> str:
+    raw = re.sub(r"\D", "", str(game_id or "").strip())
+    if not raw:
+        return ""
+    return raw.zfill(10) if len(raw) < 10 else raw
+
+
+def fetch_game_starters_from_api(
+    game_id: str,
+    *,
+    timeout_seconds: int = DEFAULT_BOXSCORE_TIMEOUT_SECONDS,
+) -> List[dict]:
     from nba_api.stats.endpoints import boxscoretraditionalv2
 
-    endpoint = boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id)
-    df = endpoint.get_data_frames()[0]
+    normalized_game_id = normalize_boxscore_game_id(game_id)
+    if not normalized_game_id:
+        return []
+    try:
+        endpoint = boxscoretraditionalv2.BoxScoreTraditionalV2(
+            game_id=normalized_game_id,
+            timeout=timeout_seconds,
+        )
+        data_frames = endpoint.get_data_frames()
+    except Exception as exc:
+        print(f"[WARN] Skipping starter fetch for game_id={game_id} ({normalized_game_id}): {exc}")
+        return []
+    if not data_frames:
+        return []
+    df = data_frames[0]
     if "START_POSITION" not in df.columns:
         return []
     starters = df[df["START_POSITION"].fillna("").astype(str).str.strip() != ""].copy()
@@ -40,6 +68,7 @@ def build_starter_history_frame(
     *,
     existing_game_ids: Optional[Iterable[str]] = None,
     max_games: Optional[int] = None,
+    fetch_timeout_seconds: int = DEFAULT_BOXSCORE_TIMEOUT_SECONDS,
 ) -> pd.DataFrame:
     existing = {str(game_id) for game_id in (existing_game_ids or [])}
     if logs_df.empty:
@@ -66,7 +95,7 @@ def build_starter_history_frame(
         unique_game_ids = unique_game_ids[:max_games]
 
     for game_id in unique_game_ids:
-        for record in fetch_game_starters_from_api(game_id):
+        for record in fetch_game_starters_from_api(game_id, timeout_seconds=fetch_timeout_seconds):
             team_abbrev = str(record.get("TEAM_ABBREVIATION") or "")
             context = game_context.get(game_id, {}).get(team_abbrev, {})
             rows.append(

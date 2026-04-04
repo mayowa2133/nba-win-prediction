@@ -155,6 +155,9 @@ def _recommendation_row(
     edge: float,
     market_snapshot_at: str,
     model_version: str,
+    quote_source_provider: Optional[str] = None,
+    quote_source_mode: Optional[str] = None,
+    quote_source_book: Optional[str] = None,
 ) -> dict:
     recommendation_id = stable_id(
         feature_row["game_id"],
@@ -190,6 +193,9 @@ def _recommendation_row(
         "published_odds": sportsbook_odds,
         "published_at": generated_at,
         "market_snapshot_at": market_snapshot_at,
+        "quote_source_provider": quote_source_provider,
+        "quote_source_mode": quote_source_mode,
+        "quote_source_book": quote_source_book,
         "market_readiness_status": "experimental",
         "lineup_context_json": json.dumps(lineup_context),
         "injury_context_json": json.dumps(injury_context),
@@ -266,6 +272,9 @@ def build_game_market_recommendations(
                                 edge=home_edge,
                                 market_snapshot_at=snapshot_at,
                                 model_version=_resolve_model_version(ml_bundle, "game_moneyline"),
+                                quote_source_provider=ml_home.get("source_provider"),
+                                quote_source_mode=ml_home.get("source_mode"),
+                                quote_source_book=ml_home.get("source_book") or ml_home.get("sportsbook"),
                             )
                         )
                     else:
@@ -281,6 +290,9 @@ def build_game_market_recommendations(
                                 edge=away_edge,
                                 market_snapshot_at=snapshot_at,
                                 model_version=_resolve_model_version(ml_bundle, "game_moneyline"),
+                                quote_source_provider=ml_away.get("source_provider"),
+                                quote_source_mode=ml_away.get("source_mode"),
+                                quote_source_book=ml_away.get("source_book") or ml_away.get("sportsbook"),
                             )
                         )
 
@@ -310,6 +322,9 @@ def build_game_market_recommendations(
                                 edge=home_edge,
                                 market_snapshot_at=snapshot_at,
                                 model_version=_resolve_model_version(spread_bundle, "game_spread"),
+                                quote_source_provider=spread_home.get("source_provider"),
+                                quote_source_mode=spread_home.get("source_mode"),
+                                quote_source_book=spread_home.get("source_book") or spread_home.get("sportsbook"),
                             )
                         )
                     else:
@@ -325,6 +340,9 @@ def build_game_market_recommendations(
                                 edge=away_edge,
                                 market_snapshot_at=snapshot_at,
                                 model_version=_resolve_model_version(spread_bundle, "game_spread"),
+                                quote_source_provider=spread_away.get("source_provider"),
+                                quote_source_mode=spread_away.get("source_mode"),
+                                quote_source_book=spread_away.get("source_book") or spread_away.get("sportsbook"),
                             )
                         )
 
@@ -354,6 +372,9 @@ def build_game_market_recommendations(
                                 edge=over_edge,
                                 market_snapshot_at=snapshot_at,
                                 model_version=_resolve_model_version(total_bundle, "game_total"),
+                                quote_source_provider=total_over.get("source_provider"),
+                                quote_source_mode=total_over.get("source_mode"),
+                                quote_source_book=total_over.get("source_book") or total_over.get("sportsbook"),
                             )
                         )
                     else:
@@ -369,6 +390,9 @@ def build_game_market_recommendations(
                                 edge=under_edge,
                                 market_snapshot_at=snapshot_at,
                                 model_version=_resolve_model_version(total_bundle, "game_total"),
+                                quote_source_provider=total_under.get("source_provider"),
+                                quote_source_mode=total_under.get("source_mode"),
+                                quote_source_book=total_under.get("source_book") or total_under.get("sportsbook"),
                             )
                         )
 

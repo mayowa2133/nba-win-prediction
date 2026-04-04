@@ -608,6 +608,12 @@ def build_historical_snapshot_frame(canonical_df: pd.DataFrame) -> pd.DataFrame:
             "market_name": str(row["market"]),
             "is_historical": 1,
             "source_url": str(row.get("source_path") or ""),
+            "source_provider": "historical_import",
+            "source_mode": "historical_snapshot",
+            "source_page_url": str(row.get("source_path") or ""),
+            "source_book": str(row.get("sportsbook") or row.get("source_name") or "historical_import"),
+            "is_consensus_quote": 1 if pd.isna(row.get("sportsbook")) else 0,
+            "page_snapshot_at": captured_at,
             "snapshot_type": f"historical_{row['line_phase']}",
             "captured_at": captured_at,
         }

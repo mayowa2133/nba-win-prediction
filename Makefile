@@ -1,6 +1,6 @@
 PYTHON ?= .venv/bin/python
 
-.PHONY: install install-dev test api score-slate warehouse-init materialize-recommendations freeze-lock ingest-official-injuries build-starter-history build-lineup-projections ingest-game-odds import-historical-odds backfill-historical-market-data backfill-game-odds train-game-models score-game-markets settle-recommendations build-market-readiness run-pipeline pipeline-daily pipeline-bootstrap pipeline-backfill replay-historical
+.PHONY: install install-dev test api score-slate warehouse-init materialize-recommendations freeze-lock ingest-official-injuries build-starter-history build-lineup-projections ingest-game-odds ingest-props import-historical-odds backfill-historical-market-data backfill-game-odds train-game-models score-game-markets settle-recommendations build-market-readiness run-pipeline pipeline-daily pipeline-bootstrap pipeline-backfill replay-historical
 
 install:
 	$(PYTHON) -m pip install -e .
@@ -46,6 +46,9 @@ build-lineup-projections:
 
 ingest-game-odds:
 	$(PYTHON) src/jobs/ingest_game_odds.py
+
+ingest-props:
+	$(PYTHON) src/jobs/ingest_props.py
 
 import-historical-odds:
 	$(PYTHON) src/jobs/import_historical_game_odds.py

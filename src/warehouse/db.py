@@ -77,6 +77,9 @@ def _ensure_sqlite_compatibility(engine: Engine) -> None:
             "published_line": "REAL",
             "published_odds": "REAL",
             "published_at": "TEXT",
+            "quote_source_provider": "TEXT",
+            "quote_source_mode": "TEXT",
+            "quote_source_book": "TEXT",
             "closing_line": "REAL",
             "closing_odds": "REAL",
             "actual_value": "REAL",
@@ -88,6 +91,22 @@ def _ensure_sqlite_compatibility(engine: Engine) -> None:
         },
         "settled_bet_outcomes": {
             "recommendation_origin": "TEXT DEFAULT 'live_daily'",
+        },
+        "game_odds_snapshots": {
+            "source_provider": "TEXT",
+            "source_mode": "TEXT",
+            "source_page_url": "TEXT",
+            "source_book": "TEXT",
+            "is_consensus_quote": "INTEGER DEFAULT 0",
+            "page_snapshot_at": "TEXT",
+        },
+        "closing_lines": {
+            "source_provider": "TEXT",
+            "source_mode": "TEXT",
+            "source_page_url": "TEXT",
+            "source_book": "TEXT",
+            "is_consensus_quote": "INTEGER DEFAULT 0",
+            "page_snapshot_at": "TEXT",
         },
     }
 

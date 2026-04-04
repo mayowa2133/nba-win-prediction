@@ -23,7 +23,8 @@ cp .env.example .env
 
 Environment variables:
 
-- `ODDS_API_KEY`: optional for live current-day odds ingestion. Required for `daily` mode and current prop/game snapshot collection, but not for historical bootstrap/backfill.
+- `ODDS_API_KEY`: optional fallback for live current-day odds/props ingestion when you explicitly choose `--game-odds-source the-odds-api` or `--props-source the-odds-api`.
+- `SPORTSGAMEODDS_API_KEY`: optional free-tier API fallback for live current-day odds/props ingestion when you explicitly choose `--game-odds-source sportsgameodds` or `--props-source sportsgameodds`.
 - `NBA_BETTING_DATABASE_URL`: optional SQLAlchemy URL. Defaults to `sqlite:///data/nba_betting_beta.db`.
 - `NBA_BETTING_EDGES_PATH`: optional override for the precomputed recommendation CSV path.
 
@@ -37,6 +38,7 @@ make ingest-official-injuries
 make build-starter-history
 make build-lineup-projections
 make ingest-game-odds
+make ingest-props
 make import-historical-odds
 make backfill-historical-market-data
 make train-game-models
@@ -56,6 +58,9 @@ Useful direct entrypoints:
 
 ```bash
 python run_pipeline.py --mode daily
+python run_pipeline.py --mode daily --game-odds-source scoresandodds --props-source scoresandodds
+python run_pipeline.py --mode daily --game-odds-source espn --props-source covers
+python run_pipeline.py --mode daily --game-odds-source sportsgameodds --props-source sportsgameodds
 python run_pipeline.py --mode bootstrap --publish-current-day-at-end
 python run_pipeline.py --mode backfill-only --backfill-start-date 2025-10-01 --backfill-end-date 2026-03-30
 python src/pipeline/run_full_slate_pipeline.py
@@ -63,7 +68,10 @@ python src/jobs/materialize_recommendations.py --edges-path data/edges_with_mark
 python src/jobs/ingest_official_injuries.py --report-date 2026-03-31
 python src/jobs/build_starter_history.py --max-games 50
 python src/jobs/build_lineup_projections.py --target-date 2026-03-31
-python src/jobs/ingest_game_odds.py --report-date 2026-03-31
+python src/jobs/ingest_game_odds.py --report-date 2026-03-31 --source scoresandodds
+python src/jobs/ingest_game_odds.py --report-date 2026-03-31 --source sportsgameodds
+python src/jobs/ingest_props.py --report-date 2026-03-31 --source scoresandodds
+python src/jobs/ingest_props.py --report-date 2026-03-31 --source sportsgameodds
 python src/jobs/import_historical_game_odds.py --manifest data/historical_odds/source_manifest.json
 python src/jobs/backfill_historical_market_data.py --canonical-odds-csv data/historical_odds/canonical_historical_odds.csv
 python src/jobs/backfill_game_odds_history.py
@@ -83,7 +91,7 @@ The orchestration CLI now supports three operating modes:
    - updates logs and features
    - ingests same-day official injuries
    - refreshes starter history and projected lineups
-   - ingests current game odds and current props
+   - ingests current game odds and current props from selected live sources
    - scores props and game markets
    - materializes live recommendations
    - settles prior recommendations and rebuilds readiness
@@ -106,6 +114,17 @@ Runtime state is persisted under `data/pipeline_state/`:
 - `historical_replay_cursor.json`
 
 Historical odds are local-first. The canonical import lives under `data/historical_odds/` and can be driven by `data/historical_odds/source_manifest.json`, with a fallback to `data/historical_vegas_lines.csv` if no manifest is present. Live API feeds default to `live_daily` recommendations only. Historical replay rows are persisted for readiness/bootstrap purposes and are excluded from the mobile-facing feed unless explicitly queried.
+
+Live source defaults:
+
+- `--game-odds-source scoresandodds`
+  - falls back to `espn` if ScoresAndOdds fails
+- `--props-source scoresandodds`
+  - falls back to `covers` if ScoresAndOdds fails
+- `sportsgameodds` is now available as an explicit API-backed fallback source for both game markets and props when you want to avoid brittle public-page scraping but still avoid The Odds API
+- `the-odds-api` remains available as an explicit fallback source, but the pipeline no longer depends on it by default
+
+Public-page snapshots now persist quote provenance (`source_provider`, `source_mode`, `source_page_url`, `source_book`, `is_consensus_quote`, `page_snapshot_at`) alongside the normalized odds rows. Readiness also tracks the dominant live quote source in `metrics_json` when live evidence exists.
 
 Primary artifacts:
 
@@ -171,7 +190,8 @@ This is the persistence layer the current beta API can grow into. It is compatib
 ## Known Gaps
 
 - Historical bootstrap and replay no longer depend on an external historical odds API, but they still depend on the quality and coverage of the locally downloaded historical datasets you import into `data/historical_odds/`.
-- Live game-market publishing and true CLV evidence still depend on fresh current-day snapshots from The Odds API and the locally accumulated sample size from those snapshots.
+- Live game-market publishing and CLV evidence now default to forward-collected public-page snapshots from ScoresAndOdds, with ESPN as a backup for full-game markets and Covers as a backup for props.
+- The public-page workaround is technically viable but operationally brittle. If the site markup changes or source access becomes unreliable, you should switch the runtime source flags to a cleaner API-backed path.
 - Game-market models currently use free historical logs plus market consensus features; they still need larger historical odds coverage and more settled live sample before readiness can promote them to `production`.
 - No iOS client is in this repository yet; the current work is the backend and data-contract foundation that the SwiftUI client will consume.
 

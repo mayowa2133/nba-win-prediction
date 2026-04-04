@@ -10,7 +10,7 @@ the best Over/Under odds for each line.
 import argparse
 import unicodedata
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import numpy as np
@@ -54,16 +54,11 @@ def normalize_name(s: str) -> str:
     return s
 
 
-def pick_best_odds(sub: pd.DataFrame) -> Tuple[float, str]:
-    """
-    Pick the "best" odds and book from a subset of rows (all one side: over or under).
-
-    Very simple rule for now: choose the row with the maximum 'odds' value.
-    """
+def pick_best_row(sub: pd.DataFrame) -> Optional[pd.Series]:
     if sub.empty:
-        return np.nan, ""
+        return None
     idx = sub["odds"].astype(float).idxmax()
-    return float(sub.loc[idx, "odds"]), str(sub.loc[idx, "book"])
+    return sub.loc[idx]
 
 
 def aggregate_props(df: pd.DataFrame) -> pd.DataFrame:
@@ -112,8 +107,12 @@ def aggregate_props(df: pd.DataFrame) -> pd.DataFrame:
         over_rows = sub[sub["side"].str.lower() == "over"]
         under_rows = sub[sub["side"].str.lower() == "under"]
 
-        over_odds, over_book = pick_best_odds(over_rows)
-        under_odds, under_book = pick_best_odds(under_rows)
+        over_best = pick_best_row(over_rows)
+        under_best = pick_best_row(under_rows)
+        over_odds = float(over_best["odds"]) if over_best is not None else np.nan
+        under_odds = float(under_best["odds"]) if under_best is not None else np.nan
+        over_book = str(over_best["book"]) if over_best is not None else ""
+        under_book = str(under_best["book"]) if under_best is not None else ""
 
         rec = {
             **key_dict,
@@ -124,6 +123,16 @@ def aggregate_props(df: pd.DataFrame) -> pd.DataFrame:
             "under_odds_best": under_odds,
             "best_over_book": over_book,
             "best_under_book": under_book,
+            "best_over_source_provider": str(over_best.get("source_provider") or "") if over_best is not None else "",
+            "best_under_source_provider": str(under_best.get("source_provider") or "") if under_best is not None else "",
+            "best_over_source_mode": str(over_best.get("source_mode") or "") if over_best is not None else "",
+            "best_under_source_mode": str(under_best.get("source_mode") or "") if under_best is not None else "",
+            "best_over_source_page_url": str(over_best.get("source_page_url") or "") if over_best is not None else "",
+            "best_under_source_page_url": str(under_best.get("source_page_url") or "") if under_best is not None else "",
+            "best_over_source_book": str(over_best.get("source_book") or over_book) if over_best is not None else "",
+            "best_under_source_book": str(under_best.get("source_book") or under_book) if under_best is not None else "",
+            "best_over_page_snapshot_at": str(over_best.get("page_snapshot_at") or "") if over_best is not None else "",
+            "best_under_page_snapshot_at": str(under_best.get("page_snapshot_at") or "") if under_best is not None else "",
         }
         records.append(rec)
 

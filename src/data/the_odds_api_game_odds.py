@@ -119,6 +119,12 @@ def build_game_odds_snapshot_frame(
                                 "source_url": source_url,
                                 "snapshot_type": "intraday",
                                 "captured_at": captured_at,
+                                "source_provider": "the_odds_api",
+                                "source_mode": "api_snapshot",
+                                "source_page_url": source_url,
+                                "source_book": sportsbook,
+                                "is_consensus_quote": 0,
+                                "page_snapshot_at": captured_at,
                             }
                         )
                     elif market_key == "spreads":
@@ -145,6 +151,12 @@ def build_game_odds_snapshot_frame(
                                 "source_url": source_url,
                                 "snapshot_type": "intraday",
                                 "captured_at": captured_at,
+                                "source_provider": "the_odds_api",
+                                "source_mode": "api_snapshot",
+                                "source_page_url": source_url,
+                                "source_book": sportsbook,
+                                "is_consensus_quote": 0,
+                                "page_snapshot_at": captured_at,
                             }
                         )
                     elif market_key == "totals":
@@ -171,6 +183,12 @@ def build_game_odds_snapshot_frame(
                                 "source_url": source_url,
                                 "snapshot_type": "intraday",
                                 "captured_at": captured_at,
+                                "source_provider": "the_odds_api",
+                                "source_mode": "api_snapshot",
+                                "source_page_url": source_url,
+                                "source_book": sportsbook,
+                                "is_consensus_quote": 0,
+                                "page_snapshot_at": captured_at,
                             }
                         )
 
@@ -195,6 +213,12 @@ def build_game_odds_snapshot_frame(
                 "source_url",
                 "snapshot_type",
                 "captured_at",
+                "source_provider",
+                "source_mode",
+                "source_page_url",
+                "source_book",
+                "is_consensus_quote",
+                "page_snapshot_at",
             ]
         )
 

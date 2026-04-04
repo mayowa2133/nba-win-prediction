@@ -141,6 +141,8 @@ def test_daily_mode_aborts_when_same_day_official_injuries_are_missing(monkeypat
             "sqlite:///ignored.db",
             ["pinnacle"],
             run_log,
+            game_odds_source="scoresandodds",
+            props_source="scoresandodds",
             skip_star_screener=True,
         )
 
@@ -149,6 +151,99 @@ def test_daily_mode_aborts_when_same_day_official_injuries_are_missing(monkeypat
         "build_prop_feature_stack",
         "ingest_official_injuries",
     ]
+
+
+def test_active_teams_for_report_day_uses_same_day_injury_rows(tmp_path, monkeypatch):
+    injuries_csv = tmp_path / "official_injuries.csv"
+    pd.DataFrame(
+        [
+            {"report_date": "2026-04-04", "game_date": "2026-04-04", "team_abbrev": "mia"},
+            {"report_date": "2026-04-04", "game_date": "2026-04-04", "team_abbrev": "atl"},
+            {"report_date": "2026-04-03", "game_date": "2026-04-03", "team_abbrev": "bos"},
+        ]
+    ).to_csv(injuries_csv, index=False)
+
+    teams = pipeline.active_teams_for_report_day(date(2026, 4, 4), injuries_csv=injuries_csv)
+
+    assert teams == ["ATL", "MIA"]
+
+
+def test_refresh_starter_history_limits_cold_start_to_active_teams(monkeypatch, tmp_path):
+    original_read_csv = pd.read_csv
+    logs_df = pd.DataFrame(
+        [
+            {
+                "game_id": f"22501{i:03d}",
+                "game_date": f"2026-04-{i:02d}",
+                "team_abbrev": "MIA",
+                "opp_abbrev": "ATL",
+            }
+            for i in range(1, 13)
+        ]
+        + [
+            {
+                "game_id": f"22502{i:03d}",
+                "game_date": f"2026-04-{i:02d}",
+                "team_abbrev": "ATL",
+                "opp_abbrev": "MIA",
+            }
+            for i in range(1, 5)
+        ]
+        + [
+            {
+                "game_id": f"22503{i:03d}",
+                "game_date": f"2026-04-{i:02d}",
+                "team_abbrev": "BOS",
+                "opp_abbrev": "NYK",
+            }
+            for i in range(1, 9)
+        ]
+    )
+    injuries_csv = tmp_path / "official_injuries.csv"
+    pd.DataFrame(
+        [
+            {"report_date": "2026-04-12", "game_date": "2026-04-12", "team_abbrev": "MIA"},
+            {"report_date": "2026-04-12", "game_date": "2026-04-12", "team_abbrev": "ATL"},
+        ]
+    ).to_csv(injuries_csv, index=False)
+
+    captured: dict[str, object] = {}
+
+    def fake_read_csv(path, *args, **kwargs):
+        if path == "data/player_game_logs.csv":
+            return logs_df.copy()
+        return original_read_csv(path, *args, **kwargs)
+
+    def fake_build(logs_df, *, existing_game_ids=None, max_games=None, fetch_timeout_seconds=10):
+        captured["logs_df"] = logs_df.copy()
+        captured["max_games"] = max_games
+        return pd.DataFrame()
+
+    monkeypatch.setattr(pipeline.pd, "read_csv", fake_read_csv)
+    monkeypatch.setattr(pipeline, "OFFICIAL_INJURIES_CSV", injuries_csv)
+    monkeypatch.setattr(pipeline, "STARTER_HISTORY_CSV", tmp_path / "starter_history.csv")
+    monkeypatch.setattr(pipeline, "build_starter_history_frame", fake_build)
+    monkeypatch.setattr(pipeline, "persist_starter_history", lambda frame, output_path, database_url: 0)
+
+    result = pipeline.refresh_starter_history("sqlite:///ignored.db", report_day=date(2026, 4, 12))
+
+    scoped_logs = captured["logs_df"]
+    assert set(scoped_logs["team_abbrev"].unique()) == {"ATL", "MIA"}
+    assert scoped_logs[scoped_logs["team_abbrev"] == "MIA"]["game_id"].nunique() == 10
+    assert scoped_logs[scoped_logs["team_abbrev"] == "ATL"]["game_id"].nunique() == 4
+    assert captured["max_games"] == 30
+    assert result["rows_persisted"] == 0
+
+
+def test_score_and_materialize_live_game_markets_skips_when_no_models(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    result = pipeline.score_and_materialize_live_game_markets(
+        date(2026, 4, 4),
+        "sqlite:///ignored.db",
+        ["draftkings"],
+    )
+
+    assert result == {"rows_materialized": 0, "status": "skipped_no_game_market_models"}
 
 
 def test_bootstrap_mode_continues_after_historical_backfill_failure(tmp_path, monkeypatch):
@@ -187,6 +282,8 @@ def test_bootstrap_mode_continues_after_historical_backfill_failure(tmp_path, mo
         database_url="sqlite:///ignored.db",
         historical_manifest_path=tmp_path / "source_manifest.json",
         bookmakers=["pinnacle"],
+        game_odds_source="scoresandodds",
+        props_source="scoresandodds",
         run_log=run_log,
         skip_prop_training=False,
         skip_game_training=False,

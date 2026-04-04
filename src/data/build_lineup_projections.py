@@ -16,9 +16,25 @@ from src.warehouse.models import InjuryReportRecord, LineupProjectionRecord
 
 
 UNAVAILABLE_STATUSES = {"out", "doubtful", "inactive_other"}
+STARTER_HISTORY_COLUMNS = [
+    "game_id",
+    "game_date",
+    "team_abbrev",
+    "opponent_abbrev",
+    "player_id",
+    "player_name",
+    "start_position",
+]
+
+
+def _empty_starter_history_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=STARTER_HISTORY_COLUMNS)
 
 
 def _latest_team_games(starter_history: pd.DataFrame, *, before_date: str) -> pd.DataFrame:
+    required = {"game_date", "team_abbrev"}
+    if starter_history.empty or not required.issubset(starter_history.columns):
+        return _empty_starter_history_frame()
     history = starter_history.copy()
     history["game_date"] = pd.to_datetime(history["game_date"])
     history = history[history["game_date"] < pd.to_datetime(before_date)]
@@ -29,6 +45,9 @@ def _latest_team_games(starter_history: pd.DataFrame, *, before_date: str) -> pd
 
 
 def _recent_start_counts(starter_history: pd.DataFrame, *, before_date: str, window: int = 10) -> pd.DataFrame:
+    required = {"team_abbrev", "game_date", "player_name"}
+    if starter_history.empty or not required.issubset(starter_history.columns):
+        return pd.DataFrame(columns=["team_abbrev", "player_name", "recent_start_count"])
     history = starter_history.copy()
     history["game_date"] = pd.to_datetime(history["game_date"])
     history = history[history["game_date"] < pd.to_datetime(before_date)]
@@ -71,7 +90,7 @@ def _position_lookup(player_positions_df: pd.DataFrame, starter_history: pd.Data
     if not player_positions_df.empty:
         for _, row in player_positions_df.iterrows():
             mapping[str(row["player_name"])] = str(row.get("position") or "")
-    if not starter_history.empty:
+    if not starter_history.empty and {"player_name", "start_position"}.issubset(starter_history.columns):
         recent_positions = (
             starter_history.groupby("player_name")["start_position"]
             .agg(lambda values: values.dropna().astype(str).mode().iloc[0] if not values.dropna().empty else "")
@@ -110,6 +129,9 @@ def build_lineup_projection_frame(
     team_status_rows = latest_injuries[latest_injuries["row_kind"].astype(str) == "team_status"].copy()
     if team_status_rows.empty:
         team_status_rows = latest_injuries.drop_duplicates(subset=["team_abbrev", "game_id"]).copy()
+    if "reported_at" in team_status_rows.columns:
+        team_status_rows = team_status_rows.sort_values(["team_abbrev", "reported_at", "game_id"])
+    team_status_rows = team_status_rows.drop_duplicates(subset=["team_abbrev"], keep="last")
 
     baseline_starters = _latest_team_games(starter_history, before_date=target_date_str)
     recent_start_counts = _recent_start_counts(starter_history, before_date=target_date_str)
@@ -218,7 +240,13 @@ def build_lineup_projection_frame(
             row["consensus_disagreement"] = 0 if not consensus_lookup else int(key not in consensus_lookup)
             projection_rows.append(row)
 
-    return pd.DataFrame(projection_rows)
+    projection_df = pd.DataFrame(projection_rows)
+    if projection_df.empty:
+        return projection_df
+    return projection_df.drop_duplicates(
+        subset=["projection_id", "team_abbrev", "projected_starter"],
+        keep="last",
+    ).reset_index(drop=True)
 
 
 def persist_lineup_projections(
@@ -229,6 +257,11 @@ def persist_lineup_projections(
 ) -> int:
     if df.empty:
         return 0
+
+    df = df.drop_duplicates(
+        subset=["projection_id", "team_abbrev", "projected_starter"],
+        keep="last",
+    ).reset_index(drop=True)
 
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
