@@ -14,6 +14,13 @@ class Reason(BaseModel):
     detail: str
 
 
+class MilestoneProbability(BaseModel):
+    threshold: float
+    probability: float
+    fair_odds: Optional[int] = None
+    line_equivalent: Optional[float] = None
+
+
 class Recommendation(BaseModel):
     id: str
     game_id: str
@@ -37,6 +44,12 @@ class Recommendation(BaseModel):
     published_line: Optional[float] = None
     published_odds: Optional[float] = None
     published_at: Optional[str] = None
+    likely_range_low: Optional[float] = None
+    likely_range_high: Optional[float] = None
+    likely_range_confidence: Optional[float] = None
+    most_likely_milestone: Optional[float] = None
+    most_likely_milestone_probability: Optional[float] = None
+    milestone_probabilities: List[MilestoneProbability] = Field(default_factory=list)
     closing_line: Optional[float] = None
     closing_odds: Optional[float] = None
     actual_value: Optional[float] = None

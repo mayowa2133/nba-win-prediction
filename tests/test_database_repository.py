@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -29,6 +30,18 @@ def test_repository_reads_materialized_database(tmp_path):
                 "model_mean_pts": 21.8,
                 "model_p_over": 0.69,
                 "model_p_under": 0.31,
+                "likely_range_low": 18.5,
+                "likely_range_high": 25.2,
+                "likely_range_confidence": 0.50,
+                "most_likely_milestone": 20.0,
+                "most_likely_milestone_probability": 0.69,
+                "milestone_probabilities_json": json.dumps(
+                    [
+                        {"threshold": 15, "probability": 0.84, "fair_odds": -525, "line_equivalent": 14.5},
+                        {"threshold": 20, "probability": 0.69, "fair_odds": -223, "line_equivalent": 19.5},
+                        {"threshold": 25, "probability": 0.41, "fair_odds": 144, "line_equivalent": 24.5},
+                    ]
+                ),
                 "model_version": "points:db-test",
             }
         ]
@@ -49,6 +62,9 @@ def test_repository_reads_materialized_database(tmp_path):
     assert items[0].player == "Database Player"
     assert items[0].market == "player_points"
     assert items[0].status == "production"
+    assert items[0].most_likely_milestone == 20.0
+    assert items[0].likely_range_low == 18.5
+    assert items[0].milestone_probabilities[0].threshold == 15.0
 
 
 def test_repository_hides_historical_replay_rows_by_default(tmp_path):

@@ -25,10 +25,12 @@ QUALITY-OF-LIFE:
 """
 
 import argparse
+import json
 import math
 import pickle
 import sys
 from pathlib import Path
+from statistics import NormalDist
 from typing import Dict, List, Optional, Tuple
 
 # Add project root to path for imports
@@ -56,6 +58,17 @@ DEFAULT_MODEL_PATHS = {
 }
 
 NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+MILESTONE_RANGE_CONFIDENCE = 0.50
+MILESTONE_STEP_BY_MARKET = {
+    "player_points": 5.0,
+    "player_points_rebounds": 5.0,
+    "player_points_assists": 5.0,
+    "player_points_rebounds_assists": 5.0,
+    "player_rebounds": 2.0,
+    "player_assists": 2.0,
+    "player_rebounds_assists": 2.0,
+    "player_threes": 1.0,
+}
 
 
 # ---------------------------------------------------------------------
@@ -88,6 +101,14 @@ def norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
+def prob_to_american(probability: float) -> Optional[int]:
+    if probability <= 0 or probability >= 1 or math.isnan(probability):
+        return None
+    if probability >= 0.5:
+        return int(round(-100 * probability / (1.0 - probability)))
+    return int(round(100 * (1.0 - probability) / probability))
+
+
 def american_to_prob(odds: float) -> float:
     if odds is None or (isinstance(odds, float) and math.isnan(odds)):
         return float("nan")
@@ -107,6 +128,86 @@ def _safe_float(x, default: float = 0.0) -> float:
         return float(x)
     except Exception:
         return float(default)
+
+
+def milestone_step_for_market(market_key: str) -> float:
+    market = str(market_key or "")
+    if market in MILESTONE_STEP_BY_MARKET:
+        return MILESTONE_STEP_BY_MARKET[market]
+    if "threes" in market:
+        return 1.0
+    if "points" in market:
+        return 5.0
+    if "rebounds" in market or "assists" in market:
+        return 2.0
+    return 5.0
+
+
+def _round_to_step(value: float, step: float) -> float:
+    if step <= 0:
+        return value
+    return round(value / step) * step
+
+
+def build_projection_milestone_summary(
+    *,
+    market_key: str,
+    mu: float,
+    sigma: float,
+    line: float,
+    probability_over_line,
+) -> Dict[str, object]:
+    sigma_eff = max(float(sigma), 1e-6)
+    step = milestone_step_for_market(market_key)
+
+    line_anchor = max(step, _round_to_step(float(line), step))
+    mean_anchor = max(step, _round_to_step(float(mu), step))
+    lower = max(step, min(line_anchor, mean_anchor) - (2.0 * step))
+    upper = max(lower + (4.0 * step), max(line_anchor, mean_anchor) + (2.0 * step))
+
+    thresholds: List[float] = []
+    current = lower
+    while current <= upper + 1e-9:
+        thresholds.append(round(current, 3))
+        current += step
+
+    milestone_probabilities: List[Dict[str, object]] = []
+    for threshold in thresholds:
+        threshold_line = threshold - 0.5
+        probability = float(min(1.0, max(0.0, probability_over_line(threshold_line))))
+        milestone_probabilities.append(
+            {
+                "threshold": float(threshold),
+                "line_equivalent": float(threshold_line),
+                "probability": probability,
+                "fair_odds": prob_to_american(probability),
+            }
+        )
+
+    milestone_candidates = [
+        entry for entry in milestone_probabilities if float(entry["probability"]) >= 0.5
+    ]
+    if milestone_candidates:
+        chosen = max(milestone_candidates, key=lambda entry: float(entry["threshold"]))
+        most_likely_milestone = float(chosen["threshold"])
+        most_likely_milestone_probability = float(chosen["probability"])
+    else:
+        most_likely_milestone = None
+        most_likely_milestone_probability = None
+
+    distribution = NormalDist(mu=float(mu), sigma=sigma_eff)
+    tail = (1.0 - MILESTONE_RANGE_CONFIDENCE) / 2.0
+    likely_range_low = max(0.0, float(distribution.inv_cdf(tail)))
+    likely_range_high = max(likely_range_low, float(distribution.inv_cdf(1.0 - tail)))
+
+    return {
+        "likely_range_low": likely_range_low,
+        "likely_range_high": likely_range_high,
+        "likely_range_confidence": MILESTONE_RANGE_CONFIDENCE,
+        "most_likely_milestone": most_likely_milestone,
+        "most_likely_milestone_probability": most_likely_milestone_probability,
+        "milestone_probabilities": milestone_probabilities,
+    }
 
 
 def load_sigma_model_bundle(path: Path):
@@ -996,19 +1097,26 @@ def evaluate_slate(
 
         line = float(row["prop_pts_line"])
 
+        use_cal = getattr(evaluate_slate, "_use_calibrator", False)
+
+        def probability_over_line(target_line: float) -> float:
+            z_local = (float(target_line) - mu) / sigma_eff
+            p_raw = 1.0 - norm_cdf(z_local)
+            p_raw = float(min(1.0, max(0.0, p_raw)))
+            if is_points and use_cal and getattr(evaluate_slate, "_calibrator", None) is not None:
+                try:
+                    p_cal = float(evaluate_slate._calibrator.predict([p_raw])[0])
+                    return float(min(1.0, max(0.0, p_cal)))
+                except Exception:
+                    return p_raw
+            return p_raw
+
         z = (line - mu) / sigma_eff
         p_over_raw = 1.0 - norm_cdf(z)
         p_over_raw = float(min(1.0, max(0.0, p_over_raw)))
 
         # Optional calibration (points only)
-        p_over = p_over_raw
-        use_cal = getattr(evaluate_slate, "_use_calibrator", False)
-        if is_points and use_cal and getattr(evaluate_slate, "_calibrator", None) is not None:
-            try:
-                p_over = float(evaluate_slate._calibrator.predict([p_over_raw])[0])
-                p_over = float(min(1.0, max(0.0, p_over)))
-            except Exception:
-                p_over = p_over_raw
+        p_over = probability_over_line(line)
 
         p_under = 1.0 - p_over
 
@@ -1043,6 +1151,13 @@ def evaluate_slate(
             line,
             prefix="rec",
         )
+        projection_summary = build_projection_milestone_summary(
+            market_key=str(row.get("market_key") or ""),
+            mu=mu,
+            sigma=sigma_eff,
+            line=line,
+            probability_over_line=probability_over_line,
+        )
 
         rec = {
             "recommendation_id": recommendation_id,
@@ -1070,6 +1185,12 @@ def evaluate_slate(
             "implied_p_under": implied_under,
             "edge_over": edge_over,
             "edge_under": edge_under,
+            "likely_range_low": float(projection_summary["likely_range_low"]),
+            "likely_range_high": float(projection_summary["likely_range_high"]),
+            "likely_range_confidence": float(projection_summary["likely_range_confidence"]),
+            "most_likely_milestone": projection_summary["most_likely_milestone"],
+            "most_likely_milestone_probability": projection_summary["most_likely_milestone_probability"],
+            "milestone_probabilities_json": json.dumps(projection_summary["milestone_probabilities"]),
             "best_over_source_provider": row.get("best_over_source_provider"),
             "best_under_source_provider": row.get("best_under_source_provider"),
             "best_over_source_mode": row.get("best_over_source_mode"),

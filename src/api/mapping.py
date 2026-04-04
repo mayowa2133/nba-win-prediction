@@ -101,6 +101,45 @@ def fair_line_value(row: pd.Series) -> float:
     return 0.0
 
 
+def likely_range_values(row: pd.Series) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    low = row.get("likely_range_low")
+    high = row.get("likely_range_high")
+    confidence = row.get("likely_range_confidence")
+    if low is None or pd.isna(low) or high is None or pd.isna(high):
+        parsed = _parse_optional_json(row.get("likely_range_json"))
+        if isinstance(parsed, dict):
+            low = parsed.get("low")
+            high = parsed.get("high")
+            confidence = parsed.get("confidence", confidence)
+    if low is None or high is None:
+        return None, None, None
+    return _to_float(low, default=float("nan")), _to_float(high, default=float("nan")), _to_float(confidence, default=float("nan"))
+
+
+def milestone_probabilities(row: pd.Series) -> List[Dict[str, object]]:
+    parsed = _parse_optional_json(row.get("milestone_probabilities_json"))
+    if parsed is None:
+        parsed = _parse_optional_json(row.get("milestone_probabilities"))
+    if not isinstance(parsed, list):
+        return []
+    output: List[Dict[str, object]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        threshold = item.get("threshold")
+        probability = item.get("probability")
+        if threshold is None or probability is None:
+            continue
+        normalized = {
+            "threshold": _to_float(threshold, default=float("nan")),
+            "probability": _to_float(probability, default=float("nan")),
+            "fair_odds": item.get("fair_odds"),
+            "line_equivalent": item.get("line_equivalent"),
+        }
+        output.append(normalized)
+    return output
+
+
 def confidence_label(probability: float, edge: float, status: str) -> str:
     if status != "production":
         return "experimental"
@@ -222,6 +261,40 @@ def build_reason_payloads(row: pd.Series, readiness_summary: str) -> List[Dict[s
         },
     ]
 
+    range_low, range_high, range_conf = likely_range_values(row)
+    if range_low is not None and range_high is not None and not math.isnan(range_low) and not math.isnan(range_high):
+        confidence_pct = 100.0 * (range_conf if range_conf is not None and not math.isnan(range_conf) else 0.50)
+        reasons.append(
+            {
+                "label": "Likely range",
+                "detail": (
+                    f"Model central {confidence_pct:.0f}% range is {range_low:.2f} to {range_high:.2f}."
+                ),
+            }
+        )
+
+    milestone_rows = milestone_probabilities(row)
+    if milestone_rows:
+        milestone_rows = sorted(milestone_rows, key=lambda item: _to_float(item.get("threshold"), default=0.0))
+        milestone = row.get("most_likely_milestone")
+        milestone_prob = row.get("most_likely_milestone_probability")
+        if milestone is not None and not pd.isna(milestone):
+            reasons.append(
+                {
+                    "label": "Most likely milestone",
+                    "detail": (
+                        f"Highest standard milestone above 50% is {float(milestone):.0f}+ "
+                        f"with model probability {_to_float(milestone_prob):.3f}."
+                    ),
+                }
+            )
+        preview = ", ".join(
+            f"{float(item['threshold']):.0f}+: {_to_float(item['probability']):.3f}"
+            for item in milestone_rows[:4]
+        )
+        if preview:
+            reasons.append({"label": "Milestones", "detail": f"Model milestone probabilities: {preview}."})
+
     if pd.notna(row.get("days_rest_used")):
         reasons.append(
             {
@@ -308,6 +381,8 @@ def row_to_recommendation_payload(row: pd.Series, *, data_timestamp: Optional[st
     published_odds = row.get("published_odds")
     if published_odds is None or pd.isna(published_odds):
         published_odds = sportsbook_odds
+    milestone_rows = milestone_probabilities(row)
+    likely_range_low, likely_range_high, likely_range_confidence = likely_range_values(row)
 
     return {
         "id": str(row["recommendation_id"]),
@@ -337,6 +412,18 @@ def row_to_recommendation_payload(row: pd.Series, *, data_timestamp: Optional[st
         "quote_source_provider": None if pd.isna(row.get("quote_source_provider")) else str(row.get("quote_source_provider")),
         "quote_source_mode": None if pd.isna(row.get("quote_source_mode")) else str(row.get("quote_source_mode")),
         "quote_source_book": None if pd.isna(row.get("quote_source_book")) else str(row.get("quote_source_book")),
+        "likely_range_low": None if likely_range_low is None or math.isnan(likely_range_low) else float(likely_range_low),
+        "likely_range_high": None if likely_range_high is None or math.isnan(likely_range_high) else float(likely_range_high),
+        "likely_range_confidence": None
+        if likely_range_confidence is None or math.isnan(likely_range_confidence)
+        else float(likely_range_confidence),
+        "most_likely_milestone": None
+        if row.get("most_likely_milestone") is None or pd.isna(row.get("most_likely_milestone"))
+        else float(row.get("most_likely_milestone")),
+        "most_likely_milestone_probability": None
+        if row.get("most_likely_milestone_probability") is None or pd.isna(row.get("most_likely_milestone_probability"))
+        else float(row.get("most_likely_milestone_probability")),
+        "milestone_probabilities": milestone_rows,
         "closing_line": None if pd.isna(row.get("closing_line")) else float(row.get("closing_line")),
         "closing_odds": None if pd.isna(row.get("closing_odds")) else float(row.get("closing_odds")),
         "actual_value": None if pd.isna(row.get("actual_value")) else float(row.get("actual_value")),

@@ -26,6 +26,16 @@ def test_beta_api_serves_precomputed_recommendations(tmp_path, monkeypatch):
                 "model_mean_pts": 23.4,
                 "model_p_over": 0.71,
                 "model_p_under": 0.29,
+                "likely_range_low": 20.0,
+                "likely_range_high": 27.0,
+                "likely_range_confidence": 0.50,
+                "most_likely_milestone": 20.0,
+                "most_likely_milestone_probability": 0.71,
+                "milestone_probabilities_json": (
+                    '[{"threshold": 15, "probability": 0.88, "fair_odds": -733, "line_equivalent": 14.5}, '
+                    '{"threshold": 20, "probability": 0.71, "fair_odds": -245, "line_equivalent": 19.5}, '
+                    '{"threshold": 25, "probability": 0.39, "fair_odds": 156, "line_equivalent": 24.5}]'
+                ),
                 "generated_at_utc": "2026-01-10T12:00:00+00:00",
                 "model_version": "target_pts:2026-01-10T12:00:00+00:00",
                 "market_readiness_status": "production",
@@ -49,6 +59,11 @@ def test_beta_api_serves_precomputed_recommendations(tmp_path, monkeypatch):
     detail_payload = detail_response.json()
     assert detail_payload["market"] == "player_points"
     assert detail_payload["status"] == "production"
+    assert detail_payload["most_likely_milestone"] == 20.0
+    assert detail_payload["likely_range_low"] == 20.0
+    assert detail_payload["likely_range_high"] == 27.0
+    assert detail_payload["milestone_probabilities"][1]["threshold"] == 20.0
+    assert any(reason["label"] == "Most likely milestone" for reason in detail_payload["reasons"])
 
     slate_response = client.get("/v1/slates/2026-01-10")
     assert slate_response.status_code == 200
@@ -60,4 +75,3 @@ def test_beta_api_serves_precomputed_recommendations(tmp_path, monkeypatch):
     assert readiness_response.status_code == 200
     readiness_payload = readiness_response.json()
     assert any(item["market"] == "player_points" for item in readiness_payload["items"])
-

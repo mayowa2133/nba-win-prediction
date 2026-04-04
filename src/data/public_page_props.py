@@ -35,6 +35,10 @@ SUPPORTED_PROP_MARKETS = {
     "player_rebounds",
     "player_assists",
     "player_threes",
+    "player_points_rebounds",
+    "player_points_assists",
+    "player_points_rebounds_assists",
+    "player_rebounds_assists",
 }
 
 NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
@@ -52,6 +56,10 @@ SCORESANDODDS_MARKET_MAP = {
     "rebounds": "player_rebounds",
     "assists": "player_assists",
     "3-pointers": "player_threes",
+    "points-&-rebounds": "player_points_rebounds",
+    "points-&-assists": "player_points_assists",
+    "points,-rebounds,-&-assists": "player_points_rebounds_assists",
+    "rebounds-&-assists": "player_rebounds_assists",
 }
 
 
@@ -86,10 +94,11 @@ def _parse_prop_cell(cell) -> tuple[Optional[float], Optional[float], Optional[s
 
 def _scoresandodds_market_key(tbody_key: str) -> Optional[str]:
     lowered = _clean_text(tbody_key).lower()
-    for token, market_key in SCORESANDODDS_MARKET_MAP.items():
-        if token in lowered:
-            return market_key
-    return None
+    match = re.search(r"odds-table--(.+?)-p-\d+$", lowered)
+    if match is None:
+        return None
+    market_slug = match.group(1)
+    return SCORESANDODDS_MARKET_MAP.get(market_slug)
 
 
 def build_scoresandodds_prop_rows(

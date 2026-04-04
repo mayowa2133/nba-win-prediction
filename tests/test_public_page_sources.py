@@ -227,6 +227,65 @@ def test_scoresandodds_matchup_props_produce_two_sided_rows_with_provenance():
     assert set(frame[frame["player"] == "Tyler Herro"]["line"]) == {24.5}
 
 
+def test_scoresandodds_combo_prop_tables_are_labeled_as_combo_markets():
+    game_row = pd.Series(
+        {
+            "fixture_id": "10794820",
+            "commence_time": "2026-04-04T23:30:00Z",
+            "home_team": "Miami Heat",
+            "away_team": "Washington Wizards",
+        }
+    )
+    html = """
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th class="book-logo"><img alt="DraftKings logo" /></th>
+        </tr>
+      </thead>
+      <tbody data-key="odds-table--points-&-rebounds-p-10794820">
+        <tr>
+          <td>Tyler Herro</td>
+          <td><span class="data-value">o29.5</span><span class="data-odds">-110</span></td>
+        </tr>
+        <tr>
+          <td>PROJ 28.1</td>
+          <td><span class="data-value">u29.5</span><span class="data-odds">-110</span></td>
+        </tr>
+      </tbody>
+      <tbody data-key="odds-table--points,-rebounds,-&-assists-p-10794820">
+        <tr>
+          <td>Tyler Herro</td>
+          <td><span class="data-value">o35.5</span><span class="data-odds">-112</span></td>
+        </tr>
+        <tr>
+          <td>PROJ 34.0</td>
+          <td><span class="data-value">u35.5</span><span class="data-odds">-108</span></td>
+        </tr>
+      </tbody>
+    </table>
+    """
+    rows = build_scoresandodds_prop_rows(
+        html,
+        game_row=game_row,
+        source_url="https://www.scoresandodds.com/nba/heat-vs-wizards",
+        allowed_markets={
+            "player_points_rebounds",
+            "player_points_rebounds_assists",
+        },
+        page_snapshot_at="2026-04-04T14:00:00Z",
+    )
+
+    frame = pd.DataFrame(rows)
+    assert not frame.empty
+    assert set(frame["market_key"]) == {
+        "player_points_rebounds",
+        "player_points_rebounds_assists",
+    }
+    assert "player_points" not in set(frame["market_key"])
+
+
 def test_espn_embedded_payload_normalizes_current_game_odds_and_lines():
     html = _fixture("espn_nba_odds.html")
     snapshot_df = build_espn_game_odds_snapshot_frame(
