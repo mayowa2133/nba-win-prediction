@@ -254,8 +254,22 @@ def test_score_and_materialize_live_props_skips_when_scanner_writes_no_fresh_edg
     stale_dated = tmp_path / "edges" / "edges_with_market_2026-04-04.csv"
     stale_dated.parent.mkdir(parents=True, exist_ok=True)
     stale_dated.write_text("stale\n", encoding="utf-8")
+    market_lines = tmp_path / "market_lines.csv"
+    pd.DataFrame(
+        [
+            {
+                "game_date": "2026-04-04",
+                "player": "Tyrese Maxey",
+                "market_key": "player_points",
+                "prop_pts_line": 27.5,
+                "over_odds_best": -110.0,
+                "under_odds_best": -110.0,
+            }
+        ]
+    ).to_csv(market_lines, index=False)
 
     monkeypatch.setattr(pipeline, "LATEST_EDGES", stale_latest)
+    monkeypatch.setattr(pipeline, "LATEST_MARKET_LINES", market_lines)
     monkeypatch.setattr(pipeline, "run_command", lambda command: None)
     monkeypatch.setattr(
         pipeline,
@@ -266,7 +280,7 @@ def test_score_and_materialize_live_props_skips_when_scanner_writes_no_fresh_edg
     result = pipeline.score_and_materialize_live_props(
         date(2026, 4, 4),
         "sqlite:///ignored.db",
-        {"edges": stale_dated},
+        {"edges": stale_dated, "market_lines": market_lines},
     )
 
     assert result == {"rows_materialized": 0, "status": "skipped_no_live_prop_recommendations"}
