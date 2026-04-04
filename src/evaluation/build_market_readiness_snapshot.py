@@ -48,6 +48,7 @@ def _load_recommendations(database_url: Optional[str], csv_path: Path) -> pd.Dat
                     "recommendation_id": row.id,
                     "game_date": row.game_date,
                     "market": row.market,
+                    "recommendation_origin": row.recommendation_origin,
                     "fair_line": row.fair_line,
                     "selected_probability": row.selected_probability,
                     "actual_value": row.actual_value,
@@ -179,6 +180,20 @@ def build_readiness_rows(
         full_window = _window_metrics(settled) if not settled.empty else {"sample_size": 0}
         trailing_30 = {"sample_size": 0}
         season_to_date = {"sample_size": 0}
+        historical_sample_size = 0
+        live_clv_sample_size = 0
+        evidence_mode = "historical_only"
+        if not settled.empty and "recommendation_origin" in settled.columns:
+            historical_sample_size = int((settled["recommendation_origin"].astype(str) == "historical_replay").sum())
+            live_clv_sample_size = int(
+                (
+                    (settled["recommendation_origin"].astype(str) == "live_daily")
+                    & pd.to_numeric(settled.get("clv"), errors="coerce").notna()
+                    & settled["result"].astype(str).str.lower().isin({"win", "loss", "push"})
+                ).sum()
+            )
+            if live_clv_sample_size > 0:
+                evidence_mode = "historical_plus_live"
         if max_game_date is not None and not settled.empty and pd.notna(max_game_date):
             trailing_30_start = max_game_date - timedelta(days=30)
             trailing_30 = _window_metrics(settled[settled["game_date"] >= trailing_30_start].copy())
@@ -198,6 +213,8 @@ def build_readiness_rows(
             clv=full_window.get("clv"),
             sample_size=full_window.get("sample_size"),
             trained=training_row.get("trained") if training_row is not None else int(full_window.get("sample_size", 0) > 0),
+            live_clv_sample_size=live_clv_sample_size,
+            evidence_mode=evidence_mode,
         )
         readiness = evaluate_market_readiness(metrics)
         rows.append(
@@ -208,6 +225,11 @@ def build_readiness_rows(
                         "full_window": full_window,
                         "trailing_30d": trailing_30,
                         "season_to_date": season_to_date,
+                        "evidence_mode": evidence_mode,
+                        "historical_sample_size": historical_sample_size,
+                        "live_clv_sample_size": live_clv_sample_size,
+                        "source_coverage": training_row.get("source_coverage") if training_row is not None else math.nan,
+                        "moneyline_coverage_rate": training_row.get("moneyline_coverage_rate") if training_row is not None else math.nan,
                         "training_metrics": training_row.to_dict() if training_row is not None else {},
                     }
                 ),

@@ -10,6 +10,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from src.contracts.versions import (
     GAME_ODDS_SCHEMA_VERSION,
+    HISTORICAL_ODDS_SCHEMA_VERSION,
     INJURY_REPORT_SCHEMA_VERSION,
     LINEUP_PROJECTION_SCHEMA_VERSION,
     RECOMMENDATION_API_SCHEMA_VERSION,
@@ -151,6 +152,72 @@ class ClosingLineRecord(Base):
 
     __table_args__ = (
         UniqueConstraint("fixture_id", "market", "side", "sportsbook", name="uq_closing_lines_fixture_market_side_book"),
+    )
+
+
+class HistoricalOddsRecord(Base):
+    __tablename__ = "historical_odds"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_date: Mapped[str] = mapped_column(String(16), nullable=False)
+    season: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    home_team: Mapped[str] = mapped_column(String(64), nullable=False)
+    away_team: Mapped[str] = mapped_column(String(64), nullable=False)
+    home_team_abbrev: Mapped[str] = mapped_column(String(16), nullable=False)
+    away_team_abbrev: Mapped[str] = mapped_column(String(16), nullable=False)
+    market_scope: Mapped[str] = mapped_column(String(32), default="full_game")
+    market: Mapped[str] = mapped_column(String(32), nullable=False)
+    line_phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    sportsbook: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    source_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_license: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=999)
+    coverage_confidence: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    spread_home: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    total_points: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    moneyline_home: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    moneyline_away: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    implied_prob_home_raw: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    implied_prob_away_raw: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    implied_prob_home_vig_free: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    implied_prob_away_vig_free: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    raw_values_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    source_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(16), default=HISTORICAL_ODDS_SCHEMA_VERSION)
+    ingested_at: Mapped[datetime] = mapped_column(default=utc_now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "game_date",
+            "home_team_abbrev",
+            "away_team_abbrev",
+            "market",
+            "line_phase",
+            "source_name",
+            "sportsbook",
+            name="uq_historical_odds_game_market_phase_source",
+        ),
+        Index("ix_historical_odds_lookup", "game_date", "home_team_abbrev", "away_team_abbrev", "market"),
+    )
+
+
+class HistoricalOddsConflictRecord(Base):
+    __tablename__ = "historical_odds_conflicts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_date: Mapped[str] = mapped_column(String(16), nullable=False)
+    home_team_abbrev: Mapped[str] = mapped_column(String(16), nullable=False)
+    away_team_abbrev: Mapped[str] = mapped_column(String(16), nullable=False)
+    market: Mapped[str] = mapped_column(String(32), nullable=False)
+    line_phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    conflict_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    candidate_values_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    resolved_source_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(16), default=HISTORICAL_ODDS_SCHEMA_VERSION)
+    ingested_at: Mapped[datetime] = mapped_column(default=utc_now)
+
+    __table_args__ = (
+        Index("ix_historical_odds_conflicts_lookup", "game_date", "home_team_abbrev", "away_team_abbrev", "market"),
     )
 
 

@@ -26,6 +26,8 @@ class MarketMetrics:
     clv: Optional[float] = None
     sample_size: Optional[int] = None
     trained: Optional[int] = None
+    live_clv_sample_size: Optional[int] = None
+    evidence_mode: Optional[str] = None
 
 
 def _metric_is_available(value: Optional[float]) -> bool:
@@ -109,10 +111,18 @@ def _minimum_sample_size(metrics: MarketMetrics) -> int:
     return 250 if str(metrics.market).startswith("game_") else 500
 
 
+def _minimum_live_sample_size(metrics: MarketMetrics) -> int:
+    return _minimum_sample_size(metrics)
+
+
 def _production_ready(metrics: MarketMetrics) -> bool:
     if not _metric_is_available(metrics.sample_size):
         return False
     if int(float(metrics.sample_size)) < _minimum_sample_size(metrics):
+        return False
+    if not _metric_is_available(metrics.live_clv_sample_size):
+        return False
+    if int(float(metrics.live_clv_sample_size)) < _minimum_live_sample_size(metrics):
         return False
     if not _beats_baseline(metrics):
         return False
@@ -123,6 +133,29 @@ def _production_ready(metrics: MarketMetrics) -> bool:
     if not _metric_is_available(metrics.clv) or float(metrics.clv) <= 0:
         return False
     return True
+
+
+def _production_blockers(metrics: MarketMetrics) -> list[str]:
+    blockers: list[str] = []
+    if not _metric_is_available(metrics.sample_size):
+        blockers.append("missing settled sample size")
+    elif int(float(metrics.sample_size)) < _minimum_sample_size(metrics):
+        blockers.append(f"minimum sample size {int(float(metrics.sample_size))}/{_minimum_sample_size(metrics)}")
+
+    if not _metric_is_available(metrics.live_clv_sample_size):
+        blockers.append("missing live publish-time CLV sample")
+    elif int(float(metrics.live_clv_sample_size)) < _minimum_live_sample_size(metrics):
+        blockers.append(
+            f"minimum live CLV sample size {int(float(metrics.live_clv_sample_size))}/{_minimum_live_sample_size(metrics)}"
+        )
+
+    if not _calibration_ok(metrics):
+        blockers.append("calibration")
+    if not _metric_is_available(metrics.vig_aware_roi) or float(metrics.vig_aware_roi) < 0:
+        blockers.append("non-negative vig-aware ROI")
+    if not _metric_is_available(metrics.clv) or float(metrics.clv) <= 0:
+        blockers.append("positive CLV")
+    return blockers
 
 
 def evaluate_market_readiness(metrics: MarketMetrics) -> dict:
@@ -150,15 +183,18 @@ def evaluate_market_readiness(metrics: MarketMetrics) -> dict:
         }
 
     if _beats_baseline(metrics):
+        blockers = _production_blockers(metrics)
+        summary = (
+            "Model clears historical baseline gates, but still misses production requirements: "
+            + ", ".join(blockers)
+            + "."
+        )
         return {
             "market": metrics.market,
             "status": "experimental",
             "tier": default["tier"],
             "label": "Experimental",
-            "summary": (
-                "Model clears the baseline gate, but still misses production requirements "
-                "for minimum sample size, calibration, and/or betting-quality metrics."
-            ),
+            "summary": summary,
         }
 
     any_metrics = any(
@@ -174,16 +210,23 @@ def evaluate_market_readiness(metrics: MarketMetrics) -> dict:
         )
     ) or bool(metrics.trained)
     if any_metrics:
+        if str(metrics.evidence_mode or "") == "historical_only":
+            summary = (
+                "Historical backtests exist, but the market has not yet accumulated enough live publish-time evidence "
+                "to move beyond experimental."
+            )
+        else:
+            summary = (
+                "Model is trained and/or scored, but does not yet clear baseline and production gates."
+                if default["status"] == "planned"
+                else "Market remains experimental because it still fails one or more baseline or betting-quality gates."
+            )
         return {
             "market": metrics.market,
             "status": "experimental",
             "tier": "beta_secondary" if str(metrics.market).startswith("game_") else default["tier"],
             "label": "Experimental",
-            "summary": (
-                "Model is trained and/or scored, but does not yet clear baseline and production gates."
-                if default["status"] == "planned"
-                else "Market remains experimental because it still fails one or more baseline or betting-quality gates."
-            ),
+            "summary": summary,
         }
 
     return {
@@ -217,6 +260,8 @@ def load_metrics_csv(path: Path) -> List[MarketMetrics]:
                 clv=record.get("clv"),
                 sample_size=record.get("sample_size"),
                 trained=record.get("trained"),
+                live_clv_sample_size=record.get("live_clv_sample_size"),
+                evidence_mode=record.get("evidence_mode"),
             )
         )
     return rows

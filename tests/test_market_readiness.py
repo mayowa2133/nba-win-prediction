@@ -14,6 +14,7 @@ def test_market_readiness_marks_market_production_when_all_gates_pass():
         vig_aware_roi=0.02,
         clv=0.01,
         sample_size=600,
+        live_clv_sample_size=600,
     )
 
     readiness = evaluate_market_readiness(metrics)
@@ -33,6 +34,7 @@ def test_market_readiness_keeps_market_experimental_when_roi_or_clv_fail():
         vig_aware_roi=-0.01,
         clv=-0.02,
         sample_size=600,
+        live_clv_sample_size=600,
     )
 
     readiness = evaluate_market_readiness(metrics)
@@ -52,6 +54,7 @@ def test_game_market_with_training_metrics_but_low_sample_stays_experimental():
         vig_aware_roi=0.01,
         clv=0.01,
         sample_size=40,
+        live_clv_sample_size=40,
         trained=1,
     )
 

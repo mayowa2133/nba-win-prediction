@@ -22,17 +22,21 @@ env/
 *~
 
 # Data files (too large for GitHub)
-data/
-!data/.gitkeep
+/data/*
+!/data/.gitkeep
+!/data/historical_odds/
+/data/historical_odds/*
+!/data/historical_odds/source_manifest.example.json
+/archive/data/
 
 # Model files (too large for GitHub)
-models/
-!models/.gitkeep
+/models/*
+!/models/.gitkeep
 
 # Logs and predictions
-logs/
-predictions/
-odds/
+/logs/
+/predictions/
+/odds/
 
 # Environment variables (API keys) - CRITICAL!
 .env
@@ -54,4 +58,3 @@ Thumbs.db
 
 # Python virtual environment
 .venv/
-

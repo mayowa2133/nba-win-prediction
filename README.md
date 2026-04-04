@@ -23,9 +23,7 @@ cp .env.example .env
 
 Environment variables:
 
-- `ODDS_API_KEY`: required for fresh odds ingestion. Keep this local only and rotate any previously exposed key.
-- `ODDSPAPI_API_KEY`: required for free-tier current and historical game-odds ingestion/backfill.
-- `ODDSPAPI_PRIMARY_BOOKMAKER`: optional preferred sportsbook slug for game-market scoring. Defaults to `pinnacle`.
+- `ODDS_API_KEY`: optional for live current-day odds ingestion. Required for `daily` mode and current prop/game snapshot collection, but not for historical bootstrap/backfill.
 - `NBA_BETTING_DATABASE_URL`: optional SQLAlchemy URL. Defaults to `sqlite:///data/nba_betting_beta.db`.
 - `NBA_BETTING_EDGES_PATH`: optional override for the precomputed recommendation CSV path.
 
@@ -39,6 +37,8 @@ make ingest-official-injuries
 make build-starter-history
 make build-lineup-projections
 make ingest-game-odds
+make import-historical-odds
+make backfill-historical-market-data
 make train-game-models
 make score-game-markets
 make settle-recommendations
@@ -64,7 +64,9 @@ python src/jobs/ingest_official_injuries.py --report-date 2026-03-31
 python src/jobs/build_starter_history.py --max-games 50
 python src/jobs/build_lineup_projections.py --target-date 2026-03-31
 python src/jobs/ingest_game_odds.py --report-date 2026-03-31
-python src/jobs/backfill_game_odds_history.py --start-date 2025-10-01 --end-date 2026-03-31
+python src/jobs/import_historical_game_odds.py --manifest data/historical_odds/source_manifest.json
+python src/jobs/backfill_historical_market_data.py --canonical-odds-csv data/historical_odds/canonical_historical_odds.csv
+python src/jobs/backfill_game_odds_history.py
 python src/jobs/train_game_market_models.py
 python src/jobs/score_game_markets.py --target-date 2026-03-31
 python src/jobs/replay_historical_recommendations.py --start-date 2025-10-01 --end-date 2026-03-30
@@ -87,29 +89,30 @@ The orchestration CLI now supports three operating modes:
    - settles prior recommendations and rebuilds readiness
 2. `bootstrap`
    - initializes the warehouse
-   - backfills official injuries and game odds for the last two seasons by default
+   - imports local historical odds sources and backfills historical market artifacts for the last two seasons by default
    - rebuilds starter history
    - retrains prop and game-market models
    - runs monthly walk-forward historical replay tagged as `historical_replay`
    - settles replay rows and rebuilds readiness
    - can optionally publish the current day at the end
 3. `backfill-only`
-   - resumes injury backfill, game-odds backfill, and historical replay
+   - resumes injury backfill, historical odds reconciliation/backfill, and historical replay
    - settles replay rows and rebuilds readiness
    - never publishes current-day recommendations
 
 Runtime state is persisted under `data/pipeline_state/`:
 
 - `injury_backfill_cursor.json`
-- `game_odds_backfill_cursor.json`
 - `historical_replay_cursor.json`
 
-Live API feeds default to `live_daily` recommendations only. Historical replay rows are persisted for readiness/bootstrap purposes and are excluded from the mobile-facing feed unless explicitly queried.
+Historical odds are local-first. The canonical import lives under `data/historical_odds/` and can be driven by `data/historical_odds/source_manifest.json`, with a fallback to `data/historical_vegas_lines.csv` if no manifest is present. Live API feeds default to `live_daily` recommendations only. Historical replay rows are persisted for readiness/bootstrap purposes and are excluded from the mobile-facing feed unless explicitly queried.
 
 Primary artifacts:
 
 - `data/edges_with_market.csv`: scored recommendations with schema/version metadata.
 - `data/nba_betting_beta.db`: default local warehouse for the API.
+- `data/historical_odds/canonical_historical_odds.csv`: reconciled local historical odds table used for backfill and replay.
+- `data/historical_odds/historical_odds_conflicts.csv`: unresolved or conflicting historical odds candidates for manual review.
 - `models/*.pkl`: model bundles with embedded metadata about target, training window, and readiness status.
 - `data/run_logs/pipeline_<date>.json`: structured per-run execution logs with step status, warnings, and counters.
 
@@ -167,8 +170,9 @@ This is the persistence layer the current beta API can grow into. It is compatib
 
 ## Known Gaps
 
-- Official injury reports, projected lineups, game-odds ingestion, game-market training/scoring, settlement, and readiness snapshots are now orchestrated through the main pipeline, but they still depend on live free-source availability and local backfill volume to become production-grade.
-- Game-market models currently use free historical logs plus market consensus features; they still need larger historical odds coverage and more settled sample before readiness can promote them to `production`.
+- Historical bootstrap and replay no longer depend on an external historical odds API, but they still depend on the quality and coverage of the locally downloaded historical datasets you import into `data/historical_odds/`.
+- Live game-market publishing and true CLV evidence still depend on fresh current-day snapshots from The Odds API and the locally accumulated sample size from those snapshots.
+- Game-market models currently use free historical logs plus market consensus features; they still need larger historical odds coverage and more settled live sample before readiness can promote them to `production`.
 - No iOS client is in this repository yet; the current work is the backend and data-contract foundation that the SwiftUI client will consume.
 
 ## License

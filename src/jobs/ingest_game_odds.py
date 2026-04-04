@@ -1,4 +1,4 @@
-"""Job wrapper for current-day game odds ingestion."""
+"""Job wrapper for current-day NBA game odds ingestion from The Odds API."""
 
 from __future__ import annotations
 
@@ -6,19 +6,19 @@ import argparse
 from datetime import date
 from pathlib import Path
 
-from src.data.oddspapi_game_odds import (
+from src.data.oddspapi_game_odds import persist_game_odds
+from src.data.the_odds_api_game_odds import (
     DEFAULT_BOOKMAKERS,
     fetch_current_game_odds_snapshots,
-    get_odds_papi_api_key,
-    persist_game_odds,
+    get_the_odds_api_key,
 )
 from src.warehouse.db import get_database_url
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Fetch current-day NBA game odds from OddsPapi.")
+    parser = argparse.ArgumentParser(description="Fetch current-day NBA game odds from The Odds API.")
     parser.add_argument("--report-date", default=date.today().isoformat(), help="Report date in YYYY-MM-DD.")
-    parser.add_argument("--api-key", default=None, help="OddsPapi API key.")
+    parser.add_argument("--api-key", default=None, help="The Odds API key.")
     parser.add_argument(
         "--bookmakers",
         default=",".join(DEFAULT_BOOKMAKERS),
@@ -34,7 +34,7 @@ def main() -> None:
     args = build_parser().parse_args()
     snapshots = fetch_current_game_odds_snapshots(
         report_date=date.fromisoformat(args.report_date),
-        api_key=get_odds_papi_api_key(args.api_key),
+        api_key=get_the_odds_api_key(args.api_key),
         bookmakers=[item.strip() for item in args.bookmakers.split(",") if item.strip()],
     )
     snapshot_count, closing_count = persist_game_odds(

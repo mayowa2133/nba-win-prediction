@@ -15,6 +15,20 @@ def american_to_prob(odds: Optional[float]) -> float:
     return 100.0 / (odds + 100.0)
 
 
+def remove_vig_two_way(
+    home_odds: Optional[float],
+    away_odds: Optional[float],
+) -> tuple[float, float]:
+    home_prob = american_to_prob(home_odds)
+    away_prob = american_to_prob(away_odds)
+    if math.isnan(home_prob) or math.isnan(away_prob):
+        return float("nan"), float("nan")
+    total = home_prob + away_prob
+    if total <= 0:
+        return float("nan"), float("nan")
+    return home_prob / total, away_prob / total
+
+
 def american_profit_for_unit(odds: Optional[float]) -> float:
     if odds is None or math.isnan(float(odds)):
         return 0.0

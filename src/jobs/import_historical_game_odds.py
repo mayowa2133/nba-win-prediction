@@ -1,4 +1,4 @@
-"""Compatibility wrapper for local historical odds import and backfill."""
+"""Import and reconcile local historical NBA game odds sources."""
 
 from __future__ import annotations
 
@@ -14,12 +14,11 @@ from src.data.historical_game_odds import (
     reconcile_historical_odds,
     write_historical_odds_artifacts,
 )
-from src.jobs.backfill_historical_market_data import build_parser as build_backfill_parser, run_backfill
 from src.warehouse.db import get_database_url
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Import local historical odds sources and backfill local market artifacts.")
+    parser = argparse.ArgumentParser(description="Import and reconcile local historical NBA odds sources.")
     parser.add_argument("--manifest", default=str(DEFAULT_HISTORICAL_ODDS_MANIFEST))
     parser.add_argument("--canonical-output", default=str(DEFAULT_CANONICAL_HISTORICAL_ODDS_CSV))
     parser.add_argument("--conflicts-output", default=str(DEFAULT_HISTORICAL_ODDS_CONFLICTS_CSV))
@@ -37,25 +36,15 @@ def main() -> None:
         canonical_output_path=Path(args.canonical_output),
         conflicts_output_path=Path(args.conflicts_output),
     )
-    persist_historical_odds(
+    odds_count, conflict_count = persist_historical_odds(
         canonical_df,
         conflicts_df,
         database_url=get_database_url(args.database_url),
     )
-    backfill_args = build_backfill_parser().parse_args(
-        [
-            "--canonical-odds-csv",
-            str(args.canonical_output),
-            "--database-url",
-            str(get_database_url(args.database_url)),
-        ]
-    )
-    result = run_backfill(backfill_args)
     print(
-        f"[INFO] Backfilled historical market data; "
-        f"spread_coverage={result['spread_coverage_rate']:.4f}, "
-        f"total_coverage={result['total_coverage_rate']:.4f}, "
-        f"moneyline_coverage={result['moneyline_coverage_rate']:.4f}"
+        f"[INFO] Wrote {len(canonical_df)} canonical historical odds row(s), "
+        f"{len(conflicts_df)} conflict row(s), "
+        f"persisted {odds_count} odds row(s) and {conflict_count} conflict row(s)"
     )
 
 

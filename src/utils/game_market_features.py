@@ -83,6 +83,8 @@ def build_team_games(logs_df: pd.DataFrame) -> pd.DataFrame:
             total_close=("total_close", _first_non_null),
             ml_team=("ml_team", _first_non_null),
             ml_opp=("ml_opp", _first_non_null),
+            ml_team_true_prob=("ml_team_true_prob", _first_non_null) if "ml_team_true_prob" in logs.columns else ("ml_team", lambda _: None),
+            ml_opp_true_prob=("ml_opp_true_prob", _first_non_null) if "ml_opp_true_prob" in logs.columns else ("ml_opp", lambda _: None),
         )
     )
     grouped["points_for"] = pd.to_numeric(grouped["team_score"], errors="coerce").fillna(0.0)
@@ -306,8 +308,10 @@ def _base_game_frame(team_games_df: pd.DataFrame) -> pd.DataFrame:
     games["game_total_target"] = pd.to_numeric(games["home_total_points"], errors="coerce").fillna(0.0)
     games["market_total_line"] = pd.to_numeric(games["home_total_close"], errors="coerce")
     games["market_home_spread_line"] = pd.to_numeric(games["home_spread_close"], errors="coerce").abs()
-    games["market_home_ml_implied"] = games["home_ml_team"].map(american_to_prob)
-    games["market_away_ml_implied"] = games["home_ml_opp"].map(american_to_prob)
+    home_true = pd.to_numeric(games.get("home_ml_team_true_prob"), errors="coerce")
+    away_true = pd.to_numeric(games.get("home_ml_opp_true_prob"), errors="coerce")
+    games["market_home_ml_implied"] = home_true.where(home_true.notna(), games["home_ml_team"].map(american_to_prob))
+    games["market_away_ml_implied"] = away_true.where(away_true.notna(), games["home_ml_opp"].map(american_to_prob))
     return games
 
 

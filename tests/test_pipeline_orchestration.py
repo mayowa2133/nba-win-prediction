@@ -47,39 +47,39 @@ def test_backfill_official_injuries_resumes_from_cursor(tmp_path, monkeypatch):
     assert cursor["last_completed_date"] == "2026-01-03"
 
 
-def test_backfill_game_odds_processes_seven_day_chunks(tmp_path, monkeypatch):
-    cursor_path = tmp_path / "game_odds_cursor.json"
-    requested_chunks: list[tuple[str, str]] = []
+def test_import_historical_game_odds_writes_canonical_artifacts(tmp_path, monkeypatch):
+    manifest = tmp_path / "source_manifest.json"
+    canonical = tmp_path / "canonical.csv"
+    conflicts = tmp_path / "conflicts.csv"
+    manifest.write_text("[]", encoding="utf-8")
 
-    monkeypatch.setattr(pipeline, "get_odds_papi_api_key", lambda _: "free-key")
-
-    def fake_fetch(*, start_date, end_date, api_key, bookmakers):
-        requested_chunks.append((start_date.isoformat(), end_date.isoformat()))
-        return [{"fixtureId": f"{start_date.isoformat()}_{end_date.isoformat()}"}]
-
-    monkeypatch.setattr(pipeline, "fetch_historical_game_odds_snapshots", fake_fetch)
+    monkeypatch.setattr(pipeline, "CANONICAL_HISTORICAL_ODDS_CSV", canonical)
+    monkeypatch.setattr(pipeline, "HISTORICAL_ODDS_CONFLICTS_CSV", conflicts)
     monkeypatch.setattr(
         pipeline,
-        "persist_game_odds",
-        lambda snapshots, snapshots_output_path, closing_output_path, database_url: (len(snapshots), len(snapshots)),
+        "import_historical_odds_sources",
+        lambda manifest_path: pd.DataFrame([{"source_name": "a"}]),
     )
+    monkeypatch.setattr(
+        pipeline,
+        "reconcile_historical_odds",
+        lambda source_rows: (
+            pd.DataFrame([{"game_date": "2026-01-10", "market": "spread"}]),
+            pd.DataFrame([{"game_date": "2026-01-10", "market": "spread"}]),
+        ),
+    )
+    monkeypatch.setattr(pipeline, "write_historical_odds_artifacts", lambda *args, **kwargs: canonical.write_text("ok", encoding="utf-8"))
+    monkeypatch.setattr(pipeline, "persist_historical_odds", lambda canonical_df, conflicts_df, database_url: (len(canonical_df), len(conflicts_df)))
 
-    result = pipeline.backfill_game_odds(
-        start_date=date(2026, 1, 1),
-        end_date=date(2026, 1, 10),
-        output_path=tmp_path / "game_odds_snapshots.csv",
-        closing_output_path=tmp_path / "closing_lines.csv",
+    result = pipeline.import_historical_game_odds(
+        manifest_path=manifest,
         database_url="sqlite:///ignored.db",
-        bookmakers=["pinnacle"],
-        cursor_path=cursor_path,
-        reset_cursor=False,
     )
 
-    cursor = json.loads(cursor_path.read_text(encoding="utf-8"))
-    assert requested_chunks == [("2026-01-01", "2026-01-07"), ("2026-01-08", "2026-01-10")]
-    assert result["chunks_completed"] == 2
-    assert result["snapshot_rows"] == 2
-    assert cursor["last_completed_chunk_end"] == "2026-01-10"
+    assert result["source_rows"] == 1
+    assert result["canonical_rows"] == 1
+    assert result["conflict_rows"] == 1
+    assert result["persisted_odds_rows"] == 1
 
 
 def test_resume_months_skips_completed_replay_months(tmp_path):
@@ -151,7 +151,7 @@ def test_daily_mode_aborts_when_same_day_official_injuries_are_missing(monkeypat
     ]
 
 
-def test_bootstrap_mode_continues_after_historical_backfill_failure(monkeypatch):
+def test_bootstrap_mode_continues_after_historical_backfill_failure(tmp_path, monkeypatch):
     events: list[str] = []
 
     def mark(name, *, error: Exception | None = None):
@@ -170,7 +170,8 @@ def test_bootstrap_mode_continues_after_historical_backfill_failure(monkeypatch)
         mark("backfill_official_injuries", error=RuntimeError("injury backfill failed")),
     )
     monkeypatch.setattr(pipeline, "refresh_starter_history", mark("refresh_starter_history"))
-    monkeypatch.setattr(pipeline, "backfill_game_odds", mark("backfill_game_odds"))
+    monkeypatch.setattr(pipeline, "import_historical_game_odds", mark("import_historical_game_odds"))
+    monkeypatch.setattr(pipeline, "backfill_historical_market_data", mark("backfill_historical_market_data"))
     monkeypatch.setattr(pipeline, "build_prop_feature_stack", mark("build_prop_feature_stack"))
     monkeypatch.setattr(pipeline, "train_prop_models", mark("train_prop_models"))
     monkeypatch.setattr(pipeline, "train_game_models", mark("train_game_models"))
@@ -184,6 +185,7 @@ def test_bootstrap_mode_continues_after_historical_backfill_failure(monkeypatch)
         backfill_start=date(2025, 10, 1),
         backfill_end=date(2026, 3, 30),
         database_url="sqlite:///ignored.db",
+        historical_manifest_path=tmp_path / "source_manifest.json",
         bookmakers=["pinnacle"],
         run_log=run_log,
         skip_prop_training=False,
@@ -200,7 +202,8 @@ def test_bootstrap_mode_continues_after_historical_backfill_failure(monkeypatch)
     assert events == [
         "backfill_official_injuries",
         "refresh_starter_history",
-        "backfill_game_odds",
+        "import_historical_game_odds",
+        "backfill_historical_market_data",
         "build_prop_feature_stack",
         "train_prop_models",
         "train_game_models",

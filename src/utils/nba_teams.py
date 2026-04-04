@@ -73,13 +73,26 @@ def team_name_mappings() -> Dict[str, str]:
 
     extras = {
         "brooklyn": "BKN",
+        "brooklyn nets": "BKN",
+        "new jersey nets": "BKN",
         "new orleans": "NOP",
+        "new orleans hornets": "NOP",
+        "new orleans oklahoma city hornets": "NOP",
         "okc": "OKC",
+        "oklahoma city": "OKC",
+        "seattle supersonics": "OKC",
+        "seattle": "OKC",
         "ny knicks": "NYK",
         "76ers": "PHI",
         "sixers": "PHI",
         "trail blazers": "POR",
         "wolves": "MIN",
+        "charlotte bobcats": "CHA",
+        "vancouver grizzlies": "MEM",
+        "njn": "BKN",
+        "sea": "OKC",
+        "nok": "NOP",
+        "cho": "CHA",
     }
     mapping.update({_normalize(name): abbr for name, abbr in extras.items()})
     return mapping

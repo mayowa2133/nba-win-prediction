@@ -1,0 +1,44 @@
+{
+  "sources": [
+    {
+      "name": "cc0_base_close_lines",
+      "license": "CC0-1.0",
+      "priority": 10,
+      "source_kind": "mapped_csv",
+      "path": "cc0_nba_betting_data.csv",
+      "line_phase": "close",
+      "coverage_confidence": "high",
+      "spread_format": "positive_favorite",
+      "column_map": {
+        "game_date": "date",
+        "home_team": "home_team",
+        "away_team": "away_team",
+        "spread_value": "spread",
+        "favored_side": "whos_favored",
+        "total_points": "total",
+        "moneyline_home": "moneyline_home",
+        "moneyline_away": "moneyline_away",
+        "season": "season"
+      }
+    },
+    {
+      "name": "supplemental_open_lines",
+      "license": "unknown",
+      "priority": 50,
+      "source_kind": "mapped_csv",
+      "path": "supplemental_open_close.csv",
+      "line_phase": "open",
+      "coverage_confidence": "medium",
+      "spread_format": "signed_home",
+      "column_map": {
+        "game_date": "game_date",
+        "home_team": "home_team",
+        "away_team": "away_team",
+        "spread_home": "home_open_spread",
+        "total_points": "open_total",
+        "moneyline_home": "home_close_ml",
+        "moneyline_away": "away_close_ml"
+      }
+    }
+  ]
+}

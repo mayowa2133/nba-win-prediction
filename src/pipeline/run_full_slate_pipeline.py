@@ -17,14 +17,25 @@ import numpy as np
 
 from src.data.build_lineup_projections import build_lineup_projection_frame, persist_lineup_projections
 from src.data.build_starter_history import build_starter_history_frame, persist_starter_history
-from src.data.oddspapi_game_odds import (
+from src.data.historical_game_odds import (
+    DEFAULT_CANONICAL_HISTORICAL_ODDS_CSV,
+    DEFAULT_HISTORICAL_ODDS_CONFLICTS_CSV,
+    DEFAULT_HISTORICAL_ODDS_MANIFEST,
+    backfill_player_logs,
+    build_historical_snapshot_frame,
+    export_game_lines_history,
+    import_historical_odds_sources,
+    persist_historical_odds,
+    reconcile_historical_odds,
+    write_historical_odds_artifacts,
+)
+from src.data.oddspapi_game_odds import persist_game_odds
+from src.data.official_injuries import fetch_official_injury_reports, persist_official_injury_reports
+from src.data.the_odds_api_game_odds import (
     DEFAULT_BOOKMAKERS,
     fetch_current_game_odds_snapshots,
-    fetch_historical_game_odds_snapshots,
-    get_odds_papi_api_key,
-    persist_game_odds,
+    get_the_odds_api_key,
 )
-from src.data.official_injuries import fetch_official_injury_reports, persist_official_injury_reports
 from src.evaluation.build_market_readiness_snapshot import load_training_metrics
 from src.evaluation.build_market_readiness_snapshot import main as build_market_readiness_main
 from src.inference.score_game_markets import build_game_market_recommendations
@@ -70,9 +81,12 @@ LINEUP_PROJECTIONS_CSV = Path("data/lineup_projections.csv")
 GAME_ODDS_SNAPSHOTS_CSV = Path("data/game_odds_snapshots.csv")
 CLOSING_LINES_CSV = Path("data/closing_lines.csv")
 PLAYER_POSITIONS_CSV = Path("data/player_positions.csv")
+HISTORICAL_ODDS_DIR = Path("data/historical_odds")
+HISTORICAL_ODDS_MANIFEST = DEFAULT_HISTORICAL_ODDS_MANIFEST
+CANONICAL_HISTORICAL_ODDS_CSV = DEFAULT_CANONICAL_HISTORICAL_ODDS_CSV
+HISTORICAL_ODDS_CONFLICTS_CSV = DEFAULT_HISTORICAL_ODDS_CONFLICTS_CSV
 PIPELINE_STATE_DIR = Path("data/pipeline_state")
 INJURY_BACKFILL_CURSOR = PIPELINE_STATE_DIR / "injury_backfill_cursor.json"
-GAME_ODDS_BACKFILL_CURSOR = PIPELINE_STATE_DIR / "game_odds_backfill_cursor.json"
 HISTORICAL_REPLAY_CURSOR = PIPELINE_STATE_DIR / "historical_replay_cursor.json"
 
 FEATURES_CSV = Path("data/player_points_features.csv")
@@ -594,6 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backfill-start-date", default=None)
     parser.add_argument("--backfill-end-date", default=None)
     parser.add_argument("--database-url", default=None)
+    parser.add_argument("--historical-odds-manifest", default=str(HISTORICAL_ODDS_MANIFEST))
     parser.add_argument("--bookmakers", default=",".join(DEFAULT_BOOKMAKERS))
     parser.add_argument("--skip-star-screener", action="store_true")
     parser.add_argument("--skip-prop-training", action="store_true")
@@ -609,6 +624,7 @@ def ensure_runtime_dirs() -> None:
     EDGES_DIR.mkdir(parents=True, exist_ok=True)
     RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
     GAME_LINES_DIR.mkdir(parents=True, exist_ok=True)
+    HISTORICAL_ODDS_DIR.mkdir(parents=True, exist_ok=True)
     PIPELINE_STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -752,59 +768,58 @@ def backfill_official_injuries(
     return {"days_completed": days_completed, "rows_persisted": rows_persisted, "cursor_path": str(cursor_path)}
 
 
-def backfill_game_odds(
+def import_historical_game_odds(
     *,
-    start_date: date,
-    end_date: date,
-    output_path: Path,
-    closing_output_path: Path,
+    manifest_path: Path,
     database_url: str,
-    bookmakers: list[str],
-    cursor_path: Path,
-    reset_cursor: bool,
 ) -> dict:
-    cursor = {} if reset_cursor else read_json(cursor_path)
-    api_key = get_odds_papi_api_key(None)
-    current = start_date
-    if cursor.get("last_completed_chunk_end"):
-        current = max(current, next_day(date.fromisoformat(cursor["last_completed_chunk_end"])))
-
-    chunks_completed = 0
-    snapshot_rows = 0
-    closing_rows = 0
-    while current <= end_date:
-        chunk_end = min(current + timedelta(days=6), end_date)
-        snapshots = fetch_historical_game_odds_snapshots(
-            start_date=current,
-            end_date=chunk_end,
-            api_key=api_key,
-            bookmakers=bookmakers,
-        )
-        s_count, c_count = persist_game_odds(
-            snapshots,
-            snapshots_output_path=output_path,
-            closing_output_path=closing_output_path,
-            database_url=database_url,
-        )
-        snapshot_rows += s_count
-        closing_rows += c_count
-        chunks_completed += 1
-        write_json(
-            cursor_path,
-            {
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-                "last_completed_chunk_start": current.isoformat(),
-                "last_completed_chunk_end": chunk_end.isoformat(),
-                "updated_at": utc_now_iso(),
-            },
-        )
-        current = chunk_end + timedelta(days=1)
+    source_rows = import_historical_odds_sources(manifest_path=manifest_path)
+    canonical_df, conflicts_df = reconcile_historical_odds(source_rows)
+    write_historical_odds_artifacts(
+        canonical_df,
+        conflicts_df,
+        canonical_output_path=CANONICAL_HISTORICAL_ODDS_CSV,
+        conflicts_output_path=HISTORICAL_ODDS_CONFLICTS_CSV,
+    )
+    odds_count, conflict_count = persist_historical_odds(
+        canonical_df,
+        conflicts_df,
+        database_url=database_url,
+    )
     return {
-        "chunks_completed": chunks_completed,
+        "source_rows": int(len(source_rows)),
+        "canonical_rows": int(len(canonical_df)),
+        "conflict_rows": int(len(conflicts_df)),
+        "persisted_odds_rows": odds_count,
+        "persisted_conflict_rows": conflict_count,
+        "canonical_output_path": str(CANONICAL_HISTORICAL_ODDS_CSV),
+    }
+
+
+def backfill_historical_market_data(*, database_url: str) -> dict:
+    canonical_df = pd.read_csv(CANONICAL_HISTORICAL_ODDS_CSV) if CANONICAL_HISTORICAL_ODDS_CSV.exists() else pd.DataFrame()
+    if canonical_df.empty:
+        raise RuntimeError(f"No canonical historical odds rows found at {CANONICAL_HISTORICAL_ODDS_CSV}")
+
+    logs_df = pd.read_csv("data/player_game_logs.csv")
+    backfilled_logs, coverage = backfill_player_logs(logs_df, canonical_df)
+    backfilled_logs.to_csv("data/player_game_logs.csv", index=False)
+
+    snapshots = build_historical_snapshot_frame(canonical_df)
+    snapshot_rows, closing_rows = persist_game_odds(
+        snapshots,
+        snapshots_output_path=GAME_ODDS_SNAPSHOTS_CSV,
+        closing_output_path=CLOSING_LINES_CSV,
+        database_url=database_url,
+    )
+    game_line_rows = export_game_lines_history(canonical_df, output_dir=GAME_LINES_DIR)
+    return {
         "snapshot_rows": snapshot_rows,
         "closing_rows": closing_rows,
-        "cursor_path": str(cursor_path),
+        "game_line_rows": game_line_rows,
+        "spread_coverage_rate": coverage["spread_coverage_rate"],
+        "total_coverage_rate": coverage["total_coverage_rate"],
+        "moneyline_coverage_rate": coverage["moneyline_coverage_rate"],
     }
 
 
@@ -976,7 +991,7 @@ def build_lineups_for_day(report_day: date, database_url: str) -> dict:
 def ingest_current_game_odds(report_day: date, database_url: str, bookmakers: list[str]) -> dict:
     snapshots = fetch_current_game_odds_snapshots(
         report_date=report_day,
-        api_key=get_odds_papi_api_key(None),
+        api_key=get_the_odds_api_key(None),
         bookmakers=bookmakers,
     )
     snapshot_count, closing_count = persist_game_odds(
@@ -1179,6 +1194,7 @@ def run_bootstrap_or_backfill_mode(
     backfill_start: date,
     backfill_end: date,
     database_url: str,
+    historical_manifest_path: Path,
     bookmakers: list[str],
     run_log: dict,
     skip_prop_training: bool,
@@ -1205,17 +1221,17 @@ def run_bootstrap_or_backfill_mode(
     execute_step(run_log, "refresh_starter_history", lambda: refresh_starter_history(database_url), strict=False)
     execute_step(
         run_log,
-        "backfill_game_odds",
-        lambda: backfill_game_odds(
-            start_date=backfill_start,
-            end_date=backfill_end,
-            output_path=GAME_ODDS_SNAPSHOTS_CSV,
-            closing_output_path=CLOSING_LINES_CSV,
+        "import_historical_game_odds",
+        lambda: import_historical_game_odds(
+            manifest_path=historical_manifest_path,
             database_url=database_url,
-            bookmakers=bookmakers,
-            cursor_path=GAME_ODDS_BACKFILL_CURSOR,
-            reset_cursor=reset_cursors,
         ),
+        strict=False,
+    )
+    execute_step(
+        run_log,
+        "backfill_historical_market_data",
+        lambda: backfill_historical_market_data(database_url=database_url),
         strict=False,
     )
     execute_step(run_log, "build_prop_feature_stack", build_prop_feature_stack, strict=False)
@@ -1258,6 +1274,7 @@ def main() -> None:
     backfill_start = date.fromisoformat(args.backfill_start_date) if args.backfill_start_date else default_start
     backfill_end = date.fromisoformat(args.backfill_end_date) if args.backfill_end_date else default_end
     database_url = get_database_url(args.database_url)
+    historical_manifest_path = Path(args.historical_odds_manifest)
     bookmakers = [item.strip() for item in args.bookmakers.split(",") if item.strip()]
 
     run_log = {
@@ -1266,6 +1283,7 @@ def main() -> None:
         "backfill_start_date": backfill_start.isoformat(),
         "backfill_end_date": backfill_end.isoformat(),
         "database_url": database_url,
+        "historical_odds_manifest": str(historical_manifest_path),
         "bookmakers": bookmakers,
         "started_at": utc_now_iso(),
         "steps": [],
@@ -1289,6 +1307,7 @@ def main() -> None:
                 backfill_start=backfill_start,
                 backfill_end=backfill_end,
                 database_url=database_url,
+                historical_manifest_path=historical_manifest_path,
                 bookmakers=bookmakers,
                 run_log=run_log,
                 skip_prop_training=bool(args.skip_prop_training),
