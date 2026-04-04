@@ -983,11 +983,16 @@ def evaluate_slate(
 
         readiness = get_market_readiness(market_key)
         model_version = str(model_bundle.get("_model_version", "unknown"))
-        derived_game_id = stable_id(
-            row.get("game_date"),
-            row.get("home_team"),
-            row.get("away_team"),
-            prefix="game",
+        existing_game_id = row.get("game_id")
+        derived_game_id = (
+            str(existing_game_id)
+            if existing_game_id is not None and not pd.isna(existing_game_id) and str(existing_game_id).strip()
+            else stable_id(
+                row.get("game_date"),
+                row.get("home_team"),
+                row.get("away_team"),
+                prefix="game",
+            )
         )
         recommendation_id = stable_id(
             row.get("player"),

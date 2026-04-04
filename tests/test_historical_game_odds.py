@@ -276,3 +276,107 @@ def test_backfill_player_logs_and_synthetic_snapshots():
     snapshot_df = build_historical_snapshot_frame(canonical_df)
     assert set(snapshot_df["market"]) == {"game_moneyline", "game_spread", "game_total"}
     assert len(snapshot_df) == 6
+
+
+def test_backfill_player_logs_handles_sources_without_moneylines():
+    canonical_df = pd.DataFrame(
+        [
+            {
+                "game_date": "2026-01-10",
+                "season": "2025",
+                "home_team": "Atlanta Hawks",
+                "away_team": "Boston Celtics",
+                "home_team_abbrev": "ATL",
+                "away_team_abbrev": "BOS",
+                "market_scope": "full_game",
+                "market": "spread",
+                "line_phase": "single_snapshot",
+                "sportsbook": "historical_import",
+                "source_name": "primary",
+                "source_license": "CC0-1.0",
+                "source_priority": 10,
+                "coverage_confidence": "high",
+                "spread_home": -3.5,
+                "total_points": None,
+                "moneyline_home": None,
+                "moneyline_away": None,
+                "implied_prob_home_raw": None,
+                "implied_prob_away_raw": None,
+                "implied_prob_home_vig_free": None,
+                "implied_prob_away_vig_free": None,
+            },
+            {
+                "game_date": "2026-01-10",
+                "season": "2025",
+                "home_team": "Atlanta Hawks",
+                "away_team": "Boston Celtics",
+                "home_team_abbrev": "ATL",
+                "away_team_abbrev": "BOS",
+                "market_scope": "full_game",
+                "market": "total",
+                "line_phase": "single_snapshot",
+                "sportsbook": "historical_import",
+                "source_name": "primary",
+                "source_license": "CC0-1.0",
+                "source_priority": 10,
+                "coverage_confidence": "high",
+                "spread_home": None,
+                "total_points": 221.5,
+                "moneyline_home": None,
+                "moneyline_away": None,
+                "implied_prob_home_raw": None,
+                "implied_prob_away_raw": None,
+                "implied_prob_home_vig_free": None,
+                "implied_prob_away_vig_free": None,
+            },
+        ]
+    )
+    logs_df = pd.DataFrame(
+        [
+            {
+                "game_id": "g1",
+                "game_date": "2026-01-10",
+                "season": 2025,
+                "player_id": 1,
+                "player_name": "Player A",
+                "team_abbrev": "ATL",
+                "opp_abbrev": "BOS",
+                "is_home": 1,
+                "minutes": 30,
+                "pts": 20,
+                "reb": 5,
+                "ast": 6,
+                "spread_close": None,
+                "total_close": None,
+                "ml_team": None,
+                "ml_opp": None,
+            },
+            {
+                "game_id": "g1",
+                "game_date": "2026-01-10",
+                "season": 2025,
+                "player_id": 2,
+                "player_name": "Player B",
+                "team_abbrev": "BOS",
+                "opp_abbrev": "ATL",
+                "is_home": 0,
+                "minutes": 32,
+                "pts": 22,
+                "reb": 8,
+                "ast": 4,
+                "spread_close": None,
+                "total_close": None,
+                "ml_team": None,
+                "ml_opp": None,
+            },
+        ]
+    )
+
+    backfilled_logs, coverage = backfill_player_logs(logs_df, canonical_df)
+
+    assert float(backfilled_logs.loc[backfilled_logs["is_home"] == 1, "spread_close"].iloc[0]) == -3.5
+    assert float(backfilled_logs.loc[backfilled_logs["is_home"] == 0, "spread_close"].iloc[0]) == 3.5
+    assert float(backfilled_logs["total_close"].iloc[0]) == 221.5
+    assert backfilled_logs["ml_team"].isna().all()
+    assert backfilled_logs["ml_opp"].isna().all()
+    assert coverage["moneyline_coverage_rate"] == 0.0

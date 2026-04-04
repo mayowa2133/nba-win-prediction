@@ -96,3 +96,41 @@ def test_settlement_updates_results_and_readiness_metrics():
 
     assert readiness_by_market["game_moneyline"]["status"] == "experimental"
     assert readiness_by_market["game_total"]["status"] == "experimental"
+
+
+def test_prop_settlement_falls_back_to_player_and_game_date_when_game_id_differs():
+    recommendations = pd.DataFrame(
+        [
+            {
+                "recommendation_id": "rec_prop",
+                "game_id": "game_synthetic_123",
+                "player": "Trae Young",
+                "game_date": "2026-01-10",
+                "home_team": "Atlanta Hawks",
+                "away_team": "Boston Celtics",
+                "market": "player_points",
+                "selection": "over",
+                "sportsbook_line": 25.5,
+                "sportsbook_odds": -110.0,
+                "published_line": 25.5,
+                "published_odds": -110.0,
+                "fair_line": 28.0,
+                "selected_probability": 0.62,
+            },
+        ]
+    )
+    logs = pd.DataFrame(
+        [
+            {"game_id": "g1", "season": "2025-26", "game_date": "2026-01-10", "player_id": 1, "player_name": "Trae Young", "team_abbrev": "ATL", "opp_abbrev": "BOS", "is_home": 1, "minutes": 35, "pts": 28, "reb": 4, "ast": 11, "stl": 1, "blk": 0, "tov": 3, "fg3m": 4, "fg3a": 10, "fga": 20, "fgm": 10, "fta": 6, "ftm": 4, "pf": 1, "oreb": 1, "team_score": 110, "opp_score": 102, "spread_close": 4.5, "total_close": 206.5, "ml_team": -120, "ml_opp": 100},
+        ]
+    )
+
+    updated_df, settled_df = settle_recommendations_frame(
+        recommendations,
+        logs_df=logs,
+        closing_lines_df=None,
+    )
+
+    assert updated_df.iloc[0]["actual_value"] == 28.0
+    assert updated_df.iloc[0]["result"] == "win"
+    assert len(settled_df) == 1

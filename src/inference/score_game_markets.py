@@ -224,10 +224,13 @@ def build_game_market_recommendations(
         return pd.DataFrame()
 
     latest_lookup = _row_lookup(latest_rows)
-    bundles = {
-        market: _load_bundle(models_dir, market)
-        for market in ("game_moneyline", "game_spread", "game_total")
-    }
+    bundles = {}
+    for market in ("game_moneyline", "game_spread", "game_total"):
+        path = models_dir / f"{market}_model.pkl"
+        if path.exists():
+            bundles[market] = _load_bundle(models_dir, market)
+    if not bundles:
+        raise RuntimeError(f"No game-market model bundles were found in {models_dir}")
 
     rows = []
     for _, feature_row in feature_frame.iterrows():
@@ -240,131 +243,134 @@ def build_game_market_recommendations(
         fixture_id = str(feature_row.get("fixture_id") or "")
         snapshot_at = str(feature_row.get("market_snapshot_at") or "")
 
-        ml_bundle = bundles["game_moneyline"]
-        prob_home = float(ml_bundle["model"].predict_proba(X[ml_bundle["feature_cols"]])[:, 1][0])
-        prob_away = 1.0 - prob_home
-        ml_home = latest_lookup.get((fixture_id, "game_moneyline", "home"))
-        ml_away = latest_lookup.get((fixture_id, "game_moneyline", "away"))
-        if ml_home and ml_away:
-            home_edge = prob_home - american_to_prob(ml_home.get("price"))
-            away_edge = prob_away - american_to_prob(ml_away.get("price"))
-            if max(home_edge, away_edge) >= min_edge:
-                if home_edge >= away_edge:
-                    rows.append(
-                        _recommendation_row(
-                            feature_row=feature_row,
-                            market="game_moneyline",
-                            selection="home",
-                            sportsbook_line=0.0,
-                            sportsbook_odds=float(ml_home.get("price")),
-                            fair_line=0.0,
-                            selected_probability=prob_home,
-                            edge=home_edge,
-                            market_snapshot_at=snapshot_at,
-                            model_version=_resolve_model_version(ml_bundle, "game_moneyline"),
+        if "game_moneyline" in bundles:
+            ml_bundle = bundles["game_moneyline"]
+            prob_home = float(ml_bundle["model"].predict_proba(X[ml_bundle["feature_cols"]])[:, 1][0])
+            prob_away = 1.0 - prob_home
+            ml_home = latest_lookup.get((fixture_id, "game_moneyline", "home"))
+            ml_away = latest_lookup.get((fixture_id, "game_moneyline", "away"))
+            if ml_home and ml_away:
+                home_edge = prob_home - american_to_prob(ml_home.get("price"))
+                away_edge = prob_away - american_to_prob(ml_away.get("price"))
+                if max(home_edge, away_edge) >= min_edge:
+                    if home_edge >= away_edge:
+                        rows.append(
+                            _recommendation_row(
+                                feature_row=feature_row,
+                                market="game_moneyline",
+                                selection="home",
+                                sportsbook_line=0.0,
+                                sportsbook_odds=float(ml_home.get("price")),
+                                fair_line=0.0,
+                                selected_probability=prob_home,
+                                edge=home_edge,
+                                market_snapshot_at=snapshot_at,
+                                model_version=_resolve_model_version(ml_bundle, "game_moneyline"),
+                            )
                         )
-                    )
-                else:
-                    rows.append(
-                        _recommendation_row(
-                            feature_row=feature_row,
-                            market="game_moneyline",
-                            selection="away",
-                            sportsbook_line=0.0,
-                            sportsbook_odds=float(ml_away.get("price")),
-                            fair_line=0.0,
-                            selected_probability=prob_away,
-                            edge=away_edge,
-                            market_snapshot_at=snapshot_at,
-                            model_version=_resolve_model_version(ml_bundle, "game_moneyline"),
+                    else:
+                        rows.append(
+                            _recommendation_row(
+                                feature_row=feature_row,
+                                market="game_moneyline",
+                                selection="away",
+                                sportsbook_line=0.0,
+                                sportsbook_odds=float(ml_away.get("price")),
+                                fair_line=0.0,
+                                selected_probability=prob_away,
+                                edge=away_edge,
+                                market_snapshot_at=snapshot_at,
+                                model_version=_resolve_model_version(ml_bundle, "game_moneyline"),
+                            )
                         )
-                    )
 
-        spread_bundle = bundles["game_spread"]
-        pred_margin = float(spread_bundle["model"].predict(X[spread_bundle["feature_cols"]])[0])
-        sigma_spread = float(spread_bundle.get("sigma") or 1.0)
-        spread_home = latest_lookup.get((fixture_id, "game_spread", "home"))
-        spread_away = latest_lookup.get((fixture_id, "game_spread", "away"))
-        if spread_home and spread_away:
-            threshold = float(spread_home.get("line_value") or spread_away.get("line_value") or 0.0)
-            prob_home_cover = float(1.0 - norm.cdf(threshold, loc=pred_margin, scale=sigma_spread))
-            prob_away_cover = float(norm.cdf(threshold, loc=pred_margin, scale=sigma_spread))
-            home_edge = prob_home_cover - american_to_prob(spread_home.get("price"))
-            away_edge = prob_away_cover - american_to_prob(spread_away.get("price"))
-            if max(home_edge, away_edge) >= min_edge:
-                if home_edge >= away_edge:
-                    rows.append(
-                        _recommendation_row(
-                            feature_row=feature_row,
-                            market="game_spread",
-                            selection="home",
-                            sportsbook_line=threshold,
-                            sportsbook_odds=float(spread_home.get("price")),
-                            fair_line=pred_margin,
-                            selected_probability=prob_home_cover,
-                            edge=home_edge,
-                            market_snapshot_at=snapshot_at,
-                            model_version=_resolve_model_version(spread_bundle, "game_spread"),
+        if "game_spread" in bundles:
+            spread_bundle = bundles["game_spread"]
+            pred_margin = float(spread_bundle["model"].predict(X[spread_bundle["feature_cols"]])[0])
+            sigma_spread = float(spread_bundle.get("sigma") or 1.0)
+            spread_home = latest_lookup.get((fixture_id, "game_spread", "home"))
+            spread_away = latest_lookup.get((fixture_id, "game_spread", "away"))
+            if spread_home and spread_away:
+                threshold = float(spread_home.get("line_value") or spread_away.get("line_value") or 0.0)
+                prob_home_cover = float(1.0 - norm.cdf(threshold, loc=pred_margin, scale=sigma_spread))
+                prob_away_cover = float(norm.cdf(threshold, loc=pred_margin, scale=sigma_spread))
+                home_edge = prob_home_cover - american_to_prob(spread_home.get("price"))
+                away_edge = prob_away_cover - american_to_prob(spread_away.get("price"))
+                if max(home_edge, away_edge) >= min_edge:
+                    if home_edge >= away_edge:
+                        rows.append(
+                            _recommendation_row(
+                                feature_row=feature_row,
+                                market="game_spread",
+                                selection="home",
+                                sportsbook_line=threshold,
+                                sportsbook_odds=float(spread_home.get("price")),
+                                fair_line=pred_margin,
+                                selected_probability=prob_home_cover,
+                                edge=home_edge,
+                                market_snapshot_at=snapshot_at,
+                                model_version=_resolve_model_version(spread_bundle, "game_spread"),
+                            )
                         )
-                    )
-                else:
-                    rows.append(
-                        _recommendation_row(
-                            feature_row=feature_row,
-                            market="game_spread",
-                            selection="away",
-                            sportsbook_line=threshold,
-                            sportsbook_odds=float(spread_away.get("price")),
-                            fair_line=pred_margin,
-                            selected_probability=prob_away_cover,
-                            edge=away_edge,
-                            market_snapshot_at=snapshot_at,
-                            model_version=_resolve_model_version(spread_bundle, "game_spread"),
+                    else:
+                        rows.append(
+                            _recommendation_row(
+                                feature_row=feature_row,
+                                market="game_spread",
+                                selection="away",
+                                sportsbook_line=threshold,
+                                sportsbook_odds=float(spread_away.get("price")),
+                                fair_line=pred_margin,
+                                selected_probability=prob_away_cover,
+                                edge=away_edge,
+                                market_snapshot_at=snapshot_at,
+                                model_version=_resolve_model_version(spread_bundle, "game_spread"),
+                            )
                         )
-                    )
 
-        total_bundle = bundles["game_total"]
-        pred_total = float(total_bundle["model"].predict(X[total_bundle["feature_cols"]])[0])
-        sigma_total = float(total_bundle.get("sigma") or 1.0)
-        total_over = latest_lookup.get((fixture_id, "game_total", "over"))
-        total_under = latest_lookup.get((fixture_id, "game_total", "under"))
-        if total_over and total_under:
-            total_line = float(total_over.get("line_value") or total_under.get("line_value") or 0.0)
-            prob_over = float(1.0 - norm.cdf(total_line, loc=pred_total, scale=sigma_total))
-            prob_under = float(norm.cdf(total_line, loc=pred_total, scale=sigma_total))
-            over_edge = prob_over - american_to_prob(total_over.get("price"))
-            under_edge = prob_under - american_to_prob(total_under.get("price"))
-            if max(over_edge, under_edge) >= min_edge:
-                if over_edge >= under_edge:
-                    rows.append(
-                        _recommendation_row(
-                            feature_row=feature_row,
-                            market="game_total",
-                            selection="over",
-                            sportsbook_line=total_line,
-                            sportsbook_odds=float(total_over.get("price")),
-                            fair_line=pred_total,
-                            selected_probability=prob_over,
-                            edge=over_edge,
-                            market_snapshot_at=snapshot_at,
-                            model_version=_resolve_model_version(total_bundle, "game_total"),
+        if "game_total" in bundles:
+            total_bundle = bundles["game_total"]
+            pred_total = float(total_bundle["model"].predict(X[total_bundle["feature_cols"]])[0])
+            sigma_total = float(total_bundle.get("sigma") or 1.0)
+            total_over = latest_lookup.get((fixture_id, "game_total", "over"))
+            total_under = latest_lookup.get((fixture_id, "game_total", "under"))
+            if total_over and total_under:
+                total_line = float(total_over.get("line_value") or total_under.get("line_value") or 0.0)
+                prob_over = float(1.0 - norm.cdf(total_line, loc=pred_total, scale=sigma_total))
+                prob_under = float(norm.cdf(total_line, loc=pred_total, scale=sigma_total))
+                over_edge = prob_over - american_to_prob(total_over.get("price"))
+                under_edge = prob_under - american_to_prob(total_under.get("price"))
+                if max(over_edge, under_edge) >= min_edge:
+                    if over_edge >= under_edge:
+                        rows.append(
+                            _recommendation_row(
+                                feature_row=feature_row,
+                                market="game_total",
+                                selection="over",
+                                sportsbook_line=total_line,
+                                sportsbook_odds=float(total_over.get("price")),
+                                fair_line=pred_total,
+                                selected_probability=prob_over,
+                                edge=over_edge,
+                                market_snapshot_at=snapshot_at,
+                                model_version=_resolve_model_version(total_bundle, "game_total"),
+                            )
                         )
-                    )
-                else:
-                    rows.append(
-                        _recommendation_row(
-                            feature_row=feature_row,
-                            market="game_total",
-                            selection="under",
-                            sportsbook_line=total_line,
-                            sportsbook_odds=float(total_under.get("price")),
-                            fair_line=pred_total,
-                            selected_probability=prob_under,
-                            edge=under_edge,
-                            market_snapshot_at=snapshot_at,
-                            model_version=_resolve_model_version(total_bundle, "game_total"),
+                    else:
+                        rows.append(
+                            _recommendation_row(
+                                feature_row=feature_row,
+                                market="game_total",
+                                selection="under",
+                                sportsbook_line=total_line,
+                                sportsbook_odds=float(total_under.get("price")),
+                                fair_line=pred_total,
+                                selected_probability=prob_under,
+                                edge=under_edge,
+                                market_snapshot_at=snapshot_at,
+                                model_version=_resolve_model_version(total_bundle, "game_total"),
+                            )
                         )
-                    )
 
     if not rows:
         return pd.DataFrame()

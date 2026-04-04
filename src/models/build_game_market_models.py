@@ -328,45 +328,79 @@ def main() -> None:
         ).mean()
     )
 
-    bundles_and_metrics = [
-        _train_moneyline_model(history, feature_cols=feature_cols, train_max=train_max, val_min=val_min),
-        _train_regression_market(
-            history,
-            market="game_spread",
-            target_col="home_margin_target",
-            line_col="market_home_spread_line",
-            feature_cols=feature_cols,
-            train_max=train_max,
-            val_min=val_min,
-        ),
-        _train_regression_market(
-            history,
-            market="game_total",
-            target_col="game_total_target",
-            line_col="market_total_line",
-            feature_cols=feature_cols,
-            train_max=train_max,
-            val_min=val_min,
-        ),
-    ]
-
     models_dir = Path(args.models_dir)
     models_dir.mkdir(parents=True, exist_ok=True)
     metrics_rows = []
-    for bundle, metrics in bundles_and_metrics:
-        market = str(metrics["market"])
-        if market == "game_moneyline":
-            metrics["source_coverage"] = moneyline_coverage_rate
-        elif market == "game_spread":
-            metrics["source_coverage"] = spread_coverage_rate
-        else:
-            metrics["source_coverage"] = total_coverage_rate
+    market_trainers = [
+        (
+            "game_moneyline",
+            moneyline_coverage_rate,
+            lambda: _train_moneyline_model(history, feature_cols=feature_cols, train_max=train_max, val_min=val_min),
+        ),
+        (
+            "game_spread",
+            spread_coverage_rate,
+            lambda: _train_regression_market(
+                history,
+                market="game_spread",
+                target_col="home_margin_target",
+                line_col="market_home_spread_line",
+                feature_cols=feature_cols,
+                train_max=train_max,
+                val_min=val_min,
+            ),
+        ),
+        (
+            "game_total",
+            total_coverage_rate,
+            lambda: _train_regression_market(
+                history,
+                market="game_total",
+                target_col="game_total_target",
+                line_col="market_total_line",
+                feature_cols=feature_cols,
+                train_max=train_max,
+                val_min=val_min,
+            ),
+        ),
+    ]
+    trained_any = False
+    for market, coverage_rate, trainer in market_trainers:
+        try:
+            bundle, metrics = trainer()
+        except RuntimeError as exc:
+            print(f"[WARN] Skipping {market} training: {exc}")
+            metrics = {
+                "market": market,
+                "holdout_brier": math.nan,
+                "baseline_brier": math.nan,
+                "holdout_log_loss": math.nan,
+                "baseline_log_loss": math.nan,
+                "holdout_mae": math.nan,
+                "baseline_mae": math.nan,
+                "calibration_error": math.nan,
+                "sample_size": 0,
+                "vig_aware_roi": math.nan,
+                "clv": math.nan,
+                "trained": 0,
+                "skip_reason": str(exc),
+            }
+            metrics["source_coverage"] = coverage_rate
+            metrics["moneyline_coverage_rate"] = moneyline_coverage_rate
+            metrics_rows.append(metrics)
+            continue
+
+        trained_any = True
+        metrics["source_coverage"] = coverage_rate
         metrics["moneyline_coverage_rate"] = moneyline_coverage_rate
         output = models_dir / f"{market}_model.pkl"
         with output.open("wb") as handle:
             pickle.dump(bundle, handle)
         metrics_rows.append(metrics)
         print(f"[INFO] Wrote {market} model bundle: {output}")
+
+    if not trained_any:
+        raise RuntimeError("No game-market models were trained successfully")
 
     metrics_path = Path(args.metrics_out)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)

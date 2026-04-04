@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional
 
+import numpy as np
 import pandas as pd
 
 from src.utils.betting import american_to_prob
@@ -249,6 +250,13 @@ def _base_game_frame(team_games_df: pd.DataFrame) -> pd.DataFrame:
 
     home = team_games[team_games["is_home"] == 1].copy()
     away = team_games[team_games["is_home"] == 0].copy()
+    home_counts = home.groupby("game_id").size()
+    away_counts = away.groupby("game_id").size()
+    valid_game_ids = sorted(set(home_counts[home_counts == 1].index) & set(away_counts[away_counts == 1].index))
+    home = home[home["game_id"].isin(valid_game_ids)].copy()
+    away = away[away["game_id"].isin(valid_game_ids)].copy()
+    if home.empty or away.empty:
+        return pd.DataFrame()
 
     home_cols = [
         "game_id",
@@ -308,8 +316,14 @@ def _base_game_frame(team_games_df: pd.DataFrame) -> pd.DataFrame:
     games["game_total_target"] = pd.to_numeric(games["home_total_points"], errors="coerce").fillna(0.0)
     games["market_total_line"] = pd.to_numeric(games["home_total_close"], errors="coerce")
     games["market_home_spread_line"] = pd.to_numeric(games["home_spread_close"], errors="coerce").abs()
-    home_true = pd.to_numeric(games.get("home_ml_team_true_prob"), errors="coerce")
-    away_true = pd.to_numeric(games.get("home_ml_opp_true_prob"), errors="coerce")
+    if "home_ml_team_true_prob" in games.columns:
+        home_true = pd.to_numeric(games["home_ml_team_true_prob"], errors="coerce")
+    else:
+        home_true = pd.Series(0.0, index=games.index, dtype=float) * np.nan
+    if "home_ml_opp_true_prob" in games.columns:
+        away_true = pd.to_numeric(games["home_ml_opp_true_prob"], errors="coerce")
+    else:
+        away_true = pd.Series(0.0, index=games.index, dtype=float) * np.nan
     games["market_home_ml_implied"] = home_true.where(home_true.notna(), games["home_ml_team"].map(american_to_prob))
     games["market_away_ml_implied"] = away_true.where(away_true.notna(), games["home_ml_opp"].map(american_to_prob))
     return games

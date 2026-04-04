@@ -155,6 +155,7 @@ def settle_recommendations_frame(
     player_results = build_player_results(logs_df)
     game_lookup = {str(row["game_id"]): row for _, row in game_results.iterrows()}
     player_lookup = {(str(row["game_id"]), str(row["player_name"])): row for _, row in player_results.iterrows()}
+    player_lookup_by_date = {(str(row["game_date"]), str(row["player_name"])): row for _, row in player_results.iterrows()}
     closing_lookup = _closing_line_lookup(closing_lines_df if closing_lines_df is not None else pd.DataFrame())
 
     updated_rows = []
@@ -171,8 +172,11 @@ def settle_recommendations_frame(
             if result_row is not None:
                 actual_value, result = _settle_game_market(row, result_row)
         else:
-            player_key = (game_id, str(row.get("player") or ""))
+            player_name = str(row.get("player") or "")
+            player_key = (game_id, player_name)
             result_row = player_lookup.get(player_key)
+            if result_row is None:
+                result_row = player_lookup_by_date.get((str(row["game_date"]), player_name))
             if result_row is not None:
                 actual_value, result = _settle_prop_market(row, result_row)
 

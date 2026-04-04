@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import delete
 
@@ -518,17 +519,22 @@ def backfill_player_logs(logs_df: pd.DataFrame, canonical_df: pd.DataFrame) -> t
     )
     logs = logs.merge(enriched_games, on=["game_id", "game_date"], how="left")
 
-    existing_spread = pd.to_numeric(logs.get("spread_close"), errors="coerce")
-    existing_total = pd.to_numeric(logs.get("total_close"), errors="coerce")
-    existing_ml_team = pd.to_numeric(logs.get("ml_team"), errors="coerce")
-    existing_ml_opp = pd.to_numeric(logs.get("ml_opp"), errors="coerce")
+    def _numeric_series(name: str) -> pd.Series:
+        if name in logs.columns:
+            return pd.to_numeric(logs[name], errors="coerce")
+        return pd.Series(np.nan, index=logs.index, dtype="float64")
 
-    backfill_spread = pd.to_numeric(logs.get("spread_home"), errors="coerce")
-    backfill_total = pd.to_numeric(logs.get("total_points"), errors="coerce")
-    backfill_ml_home = pd.to_numeric(logs.get("moneyline_home"), errors="coerce")
-    backfill_ml_away = pd.to_numeric(logs.get("moneyline_away"), errors="coerce")
-    backfill_prob_home = pd.to_numeric(logs.get("moneyline_home_vig_free"), errors="coerce")
-    backfill_prob_away = pd.to_numeric(logs.get("moneyline_away_vig_free"), errors="coerce")
+    existing_spread = _numeric_series("spread_close")
+    existing_total = _numeric_series("total_close")
+    existing_ml_team = _numeric_series("ml_team")
+    existing_ml_opp = _numeric_series("ml_opp")
+
+    backfill_spread = _numeric_series("spread_home")
+    backfill_total = _numeric_series("total_points")
+    backfill_ml_home = _numeric_series("moneyline_home")
+    backfill_ml_away = _numeric_series("moneyline_away")
+    backfill_prob_home = _numeric_series("moneyline_home_vig_free")
+    backfill_prob_away = _numeric_series("moneyline_away_vig_free")
 
     logs["spread_close"] = existing_spread.where(existing_spread.notna(), backfill_spread.where(logs["is_home"] == 1, -backfill_spread))
     logs["total_close"] = existing_total.where(existing_total.notna(), backfill_total)

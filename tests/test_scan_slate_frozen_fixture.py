@@ -129,4 +129,3 @@ def test_frozen_slate_scoring_uses_current_prop_line(tmp_path, monkeypatch):
 
     assert float(scored_row["model_mean_pts"]) == expected_mu
     assert float(scored_row["model_mean_pts"]) != historical_mu
-
