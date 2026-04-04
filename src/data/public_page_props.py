@@ -37,6 +37,15 @@ SUPPORTED_PROP_MARKETS = {
     "player_threes",
 }
 
+NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+PROPS_SOURCE_FALLBACKS = {
+    "scoresandodds": ("scoresandodds", "sportsgameodds", "covers"),
+    "sportsgameodds": ("sportsgameodds", "scoresandodds", "covers"),
+    "covers": ("covers", "scoresandodds", "sportsgameodds"),
+    "the-odds-api": ("the-odds-api",),
+}
+
 
 SCORESANDODDS_MARKET_MAP = {
     "points": "player_points",
@@ -230,6 +239,45 @@ def _strip_player_position(text: str) -> str:
     return re.sub(r"\s*\([A-Z/]+\)\s*$", "", _clean_text(text))
 
 
+def _titlecase_name_token(token: str) -> str:
+    if not token:
+        return ""
+    lowered = token.lower()
+    if lowered in NAME_SUFFIXES:
+        return lowered.upper() if lowered in {"ii", "iii", "iv", "v"} else lowered.title()
+    if len(token) <= 2 and token.isupper():
+        return token
+    return token.title()
+
+
+def _name_from_slug(slug: str) -> str:
+    cleaned = _clean_text(slug).strip("/").split("/")[-1]
+    if not cleaned:
+        return ""
+    tokens = [token for token in cleaned.replace("-", " ").split() if token]
+    return " ".join(_titlecase_name_token(token) for token in tokens)
+
+
+def _extract_covers_player_name(container) -> str:
+    player_link = container.select_one("a.player-link[href]")
+    if player_link is not None:
+        href = _clean_text(player_link.get("href"))
+        slug_name = _name_from_slug(href)
+        if slug_name:
+            return slug_name
+
+    avatar = container.select_one("img[alt$=' logo']")
+    if avatar is not None:
+        alt = _clean_text(avatar.get("alt"))
+        if alt.lower().endswith(" logo"):
+            alt = alt[:-5].strip()
+        if alt:
+            return alt
+
+    player_el = container.select_one(".category-title .category")
+    return _strip_player_position(_clean_text(player_el.get_text(" ", strip=True) if player_el is not None else ""))
+
+
 def build_covers_prop_rows(
     html: str,
     *,
@@ -258,9 +306,8 @@ def build_covers_prop_rows(
         away_team = canonical_team_name_from_abbrev(away_abbrev) or away_abbrev
         home_team = canonical_team_name_from_abbrev(home_abbrev) or home_abbrev
 
-        player_el = container.select_one(".category-title .category")
         prediction_el = container.select_one(".category-title .prediction")
-        player_name = _strip_player_position(_clean_text(player_el.get_text(" ", strip=True) if player_el is not None else ""))
+        player_name = _extract_covers_player_name(container)
         side, line_value = _parse_covers_prediction(_clean_text(prediction_el.get_text(" ", strip=True) if prediction_el is not None else ""))
         if not player_name or side is None or line_value is None:
             continue
@@ -317,6 +364,46 @@ def fetch_covers_prop_rows(
         allowed_markets=allowed_markets,
         page_snapshot_at=page_snapshot_at,
     )
+
+
+def _prop_identity(row: dict) -> tuple:
+    commence_time = _clean_text(row.get("commence_time"))
+    game_date = commence_time[:10] if commence_time else ""
+    return (
+        game_date,
+        _clean_text(row.get("home_team")).lower(),
+        _clean_text(row.get("away_team")).lower(),
+        _clean_text(row.get("market_key")).lower(),
+        _clean_text(row.get("player")).lower(),
+        round(float(row.get("line", 0.0)), 4),
+        _clean_text(row.get("side")).lower(),
+        _clean_text(row.get("book")).lower(),
+        int(float(row.get("odds", 0.0))),
+    )
+
+
+def merge_prop_source_rows(
+    rows_by_source: dict[str, list[dict]],
+    *,
+    source_priority: Iterable[str],
+) -> tuple[list[dict], list[str]]:
+    merged: list[dict] = []
+    seen: set[tuple] = set()
+    sources_used: list[str] = []
+
+    for source in source_priority:
+        rows = rows_by_source.get(source) or []
+        if not rows:
+            continue
+        sources_used.append(source)
+        for row in rows:
+            key = _prop_identity(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(row))
+
+    return merged, sources_used
 
 
 def write_prop_rows(rows: list[dict], output_path) -> None:

@@ -34,9 +34,11 @@ from src.data.oddspapi_game_odds import persist_game_odds
 from src.data.official_injuries import fetch_official_injury_reports, persist_official_injury_reports
 from src.data.public_page_game_odds import fetch_espn_game_frames, fetch_scoresandodds_game_frames
 from src.data.public_page_props import (
+    PROPS_SOURCE_FALLBACKS,
     SUPPORTED_PROP_MARKETS,
     fetch_covers_prop_rows,
     fetch_scoresandodds_prop_rows,
+    merge_prop_source_rows,
 )
 from src.data.sportsgameodds import (
     fetch_sportsgameodds_game_frames,
@@ -116,14 +118,6 @@ GAME_ODDS_SOURCE_FALLBACKS = {
     "sportsgameodds": ("sportsgameodds",),
     "the-odds-api": ("the-odds-api",),
 }
-
-PROPS_SOURCE_FALLBACKS = {
-    "scoresandodds": ("scoresandodds", "covers"),
-    "covers": ("covers",),
-    "sportsgameodds": ("sportsgameodds",),
-    "the-odds-api": ("the-odds-api",),
-}
-
 
 def run(cmd, desc=None, stdout_path: Path | None = None):
     """
@@ -1174,46 +1168,42 @@ def fetch_current_props_and_market_lines(
     source: str,
 ) -> dict:
     errors: list[str] = []
-    rows_written = 0
-    source_used = None
+    rows_by_source: dict[str, list[dict]] = {}
+
+    for path in (LATEST_ODDS_SLATE, LATEST_MARKET_LINES, dated_paths["raw_props"], dated_paths["market_lines"]):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
     for candidate in PROPS_SOURCE_FALLBACKS[source]:
         try:
             if candidate == "scoresandodds":
-                rows = fetch_scoresandodds_prop_rows(
+                rows_by_source[candidate] = fetch_scoresandodds_prop_rows(
                     report_date=report_day,
                     allowed_markets=SUPPORTED_PROP_MARKETS,
                 )
-                if not rows:
+                if not rows_by_source[candidate]:
                     raise RuntimeError(f"{candidate} returned no prop rows for {report_day.isoformat()}")
-                write_prop_slate_csv(rows, LATEST_ODDS_SLATE)
-                rows_written = len(rows)
-                source_used = candidate
-                break
+                continue
             if candidate == "covers":
-                rows = fetch_covers_prop_rows(
+                rows_by_source[candidate] = fetch_covers_prop_rows(
                     report_date=report_day,
                     allowed_markets=SUPPORTED_PROP_MARKETS,
                 )
-                if not rows:
+                if not rows_by_source[candidate]:
                     raise RuntimeError(f"{candidate} returned no prop rows for {report_day.isoformat()}")
-                write_prop_slate_csv(rows, LATEST_ODDS_SLATE)
-                rows_written = len(rows)
-                source_used = candidate
-                break
+                continue
             if candidate == "sportsgameodds":
-                rows = fetch_sportsgameodds_prop_rows(
+                rows_by_source[candidate] = fetch_sportsgameodds_prop_rows(
                     report_date=report_day,
                     allowed_markets=SUPPORTED_PROP_MARKETS,
                     api_key=get_sportsgameodds_api_key(None),
                     bookmakers=DEFAULT_BOOKMAKERS,
                 )
-                if not rows:
+                if not rows_by_source[candidate]:
                     raise RuntimeError(f"{candidate} returned no prop rows for {report_day.isoformat()}")
-                write_prop_slate_csv(rows, LATEST_ODDS_SLATE)
-                rows_written = len(rows)
-                source_used = candidate
-                break
+                continue
             if candidate == "the-odds-api":
                 run_command(
                     [
@@ -1222,21 +1212,29 @@ def fetch_current_props_and_market_lines(
                         "player_points,player_rebounds,player_assists,player_threes",
                     ]
                 )
-                rows_written = int(len(pd.read_csv(LATEST_ODDS_SLATE))) if LATEST_ODDS_SLATE.exists() else 0
-                if rows_written <= 0:
+                rows_by_source[candidate] = pd.read_csv(LATEST_ODDS_SLATE).to_dict("records") if LATEST_ODDS_SLATE.exists() else []
+                if not rows_by_source[candidate]:
                     raise RuntimeError(f"{candidate} returned no prop rows for {report_day.isoformat()}")
-                source_used = candidate
-                break
+                continue
             raise RuntimeError(f"Unsupported props source: {candidate}")
         except Exception as exc:
             errors.append(f"{candidate}: {exc}")
 
-    if source_used is None:
+    if not rows_by_source:
         raise RuntimeError(" | ".join(errors) if errors else "No live props source succeeded")
 
+    merged_rows, sources_used = merge_prop_source_rows(
+        rows_by_source,
+        source_priority=PROPS_SOURCE_FALLBACKS[source],
+    )
+    write_prop_slate_csv(merged_rows, LATEST_ODDS_SLATE)
+    rows_written = len(merged_rows)
+
     if LATEST_ODDS_SLATE.exists():
+        dated_paths["raw_props"].parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(LATEST_ODDS_SLATE, dated_paths["raw_props"])
     if LATEST_GAME_LINES.exists():
+        dated_paths["game_lines"].parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(LATEST_GAME_LINES, dated_paths["game_lines"])
     run_command(
         [
@@ -1245,19 +1243,49 @@ def fetch_current_props_and_market_lines(
             str(LATEST_ODDS_SLATE),
             "--output",
             str(dated_paths["market_lines"]),
+            "--require-two-sided",
         ]
     )
+    market_line_rows = 0
     if dated_paths["market_lines"].exists():
+        market_lines_df = pd.read_csv(dated_paths["market_lines"])
+        market_line_rows = int(len(market_lines_df))
+    if market_line_rows > 0:
         shutil.copyfile(dated_paths["market_lines"], LATEST_MARKET_LINES)
+    else:
+        try:
+            LATEST_MARKET_LINES.unlink()
+        except FileNotFoundError:
+            pass
     return {
         "raw_props_path": str(dated_paths["raw_props"]),
         "market_lines_path": str(dated_paths["market_lines"]),
         "rows_written": rows_written,
-        "source_used": source_used,
+        "market_line_rows": market_line_rows,
+        "source_used": sources_used[0],
+        "sources_used": sources_used,
+        "source_failures": errors,
     }
 
 
 def score_and_materialize_live_props(report_day: date, database_url: str, dated_paths: dict[str, Path]) -> dict:
+    market_lines_path = dated_paths.get("market_lines", LATEST_MARKET_LINES)
+
+    for path in (dated_paths["edges"], LATEST_EDGES):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+    if not market_lines_path.exists():
+        return {"rows_materialized": 0, "status": "skipped_no_two_sided_prop_markets"}
+    try:
+        market_lines_df = pd.read_csv(market_lines_path)
+    except pd.errors.EmptyDataError:
+        return {"rows_materialized": 0, "status": "skipped_no_two_sided_prop_markets"}
+    if market_lines_df.empty:
+        return {"rows_materialized": 0, "status": "skipped_no_two_sided_prop_markets"}
+
     run_command(
         [
             *python_cmd("src/inference/scan_slate_with_model.py"),
@@ -1273,8 +1301,11 @@ def score_and_materialize_live_props(report_day: date, database_url: str, dated_
             "0.03",
         ]
     )
-    if dated_paths["edges"].exists():
-        shutil.copyfile(dated_paths["edges"], LATEST_EDGES)
+
+    if not dated_paths["edges"].exists():
+        return {"rows_materialized": 0, "status": "skipped_no_live_prop_recommendations"}
+
+    shutil.copyfile(dated_paths["edges"], LATEST_EDGES)
     scored_count, _ = materialize_edges(
         LATEST_EDGES,
         database_url=database_url,
@@ -1437,7 +1468,6 @@ def run_daily_mode(
         lambda: fetch_current_props_and_market_lines(report_day, dated_paths, props_source),
         strict=True,
     )
-    require_rows(dated_paths["market_lines"], report_day.isoformat(), "game_date")
     execute_step(run_log, "score_materialize_live_props", lambda: score_and_materialize_live_props(report_day, database_url, dated_paths), strict=True)
     execute_step(run_log, "score_materialize_live_game_markets", lambda: score_and_materialize_live_game_markets(report_day, database_url, bookmakers), strict=True)
     execute_step(run_log, "settle_refresh_readiness", lambda: settle_and_refresh_readiness(database_url), strict=True)

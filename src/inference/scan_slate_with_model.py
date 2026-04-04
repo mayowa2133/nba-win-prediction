@@ -55,6 +55,8 @@ DEFAULT_MODEL_PATHS = {
     "player_threes": "models/threes_regression.pkl",
 }
 
+NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
 
 # ---------------------------------------------------------------------
 # Utilities
@@ -68,6 +70,18 @@ def normalize_name(s: str) -> str:
         s = s.replace(ch, " ")
     s = " ".join(s.split())
     return s
+
+
+def player_initial_last_key(name: str) -> tuple[str, str]:
+    normalized = normalize_name(name)
+    parts = [part for part in normalized.split() if part]
+    if not parts:
+        return "", ""
+    first_initial = parts[0][0]
+    last_index = len(parts) - 1
+    while last_index > 0 and parts[last_index] in NAME_SUFFIXES:
+        last_index -= 1
+    return first_initial, parts[last_index]
 
 
 def norm_cdf(x: float) -> float:
@@ -454,6 +468,9 @@ def load_features(features_csv: Path) -> pd.DataFrame:
 
     df = df.copy()
     df["player_name_norm"] = df["player_name"].map(normalize_name)
+    df["player_initial_last_key"] = df["player_name"].map(player_initial_last_key)
+    if "team_abbrev" in df.columns:
+        df["team_abbrev_norm"] = df["team_abbrev"].astype(str).str.upper().str.strip()
     df["game_date_ts"] = pd.to_datetime(df["game_date"], errors="coerce").dt.tz_localize(None)
     return df
 
@@ -470,6 +487,7 @@ def load_market_lines(market_lines_csv: Path) -> pd.DataFrame:
 
     df = df.copy()
     df["player_norm"] = df["player"].map(normalize_name)
+    df["player_initial_last_key"] = df["player"].map(player_initial_last_key)
     df["game_date_ts"] = pd.to_datetime(df["game_date"], errors="coerce").dt.tz_localize(None)
     return df
 
@@ -477,11 +495,33 @@ def load_market_lines(market_lines_csv: Path) -> pd.DataFrame:
 def find_latest_feature_row(
     player_features: pd.DataFrame,
     player_norm: str,
-    game_date_ts: pd.Timestamp
+    game_date_ts: pd.Timestamp,
+    market_row: Optional[pd.Series] = None,
 ) -> Optional[pd.Series]:
     sub = player_features[player_features["player_name_norm"] == player_norm]
     if sub.empty:
-        return None
+        player_key = player_initial_last_key(player_norm)
+        if not any(player_key):
+            return None
+        sub = player_features[player_features["player_initial_last_key"] == player_key]
+        if sub.empty:
+            return None
+        if market_row is not None and "team_abbrev_norm" in sub.columns:
+            matchup_teams = {
+                team
+                for team in (
+                    full_team_to_abbr(market_row.get("home_team")),
+                    full_team_to_abbr(market_row.get("away_team")),
+                )
+                if team
+            }
+            if matchup_teams:
+                scoped = sub[sub["team_abbrev_norm"].isin(matchup_teams)]
+                if not scoped.empty:
+                    sub = scoped
+        unique_players = sub["player_name_norm"].dropna().unique()
+        if len(unique_players) != 1:
+            return None
     sub = sub[sub["game_date_ts"] < game_date_ts]
     if sub.empty:
         return None
@@ -770,7 +810,7 @@ def evaluate_slate(
         player_norm = row["player_norm"]
         game_date_ts = row["game_date_ts"]
 
-        feat_row = find_latest_feature_row(df_features, player_norm, game_date_ts)
+        feat_row = find_latest_feature_row(df_features, player_norm, game_date_ts, market_row=row)
         if feat_row is None:
             skip("no_feature_row")
             continue

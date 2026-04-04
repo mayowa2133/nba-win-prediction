@@ -13,7 +13,7 @@ from src.data.public_page_game_odds import (
     build_scoresandodds_games_frame,
     build_scoresandodds_matchup_snapshot_frame,
 )
-from src.data.public_page_props import build_covers_prop_rows, build_scoresandodds_prop_rows
+from src.data.public_page_props import build_covers_prop_rows, build_scoresandodds_prop_rows, merge_prop_source_rows
 from src.data.sportsgameodds import (
     build_sportsgameodds_game_lines_frame,
     build_sportsgameodds_game_odds_snapshot_frame,
@@ -341,6 +341,93 @@ def test_covers_props_parser_prefers_trailing_price_token():
     assert list(frame["book"]) == ["draftkings", "tooniebet"]
     assert list(frame["odds"]) == [100, -115]
     assert list(frame["line"]) == [15.5, 15.5]
+
+
+def test_covers_props_parser_prefers_full_name_from_player_link():
+    html = """
+    <table>
+      <tr class="game-projections-container">
+        <a class="projection-game-link">DET @ PHI</a>
+        <span class="_badge">POINTS SCORED</span>
+        <div class="category-title">
+          <span class="category">
+            <a class="player-link" href="/sport/basketball/nba/players/4926/kevin-huerter">K. Huerter</a>
+            <span class="player-position">(SG)</span>
+          </span>
+          <span class="prediction">u10.5 Points Scored</span>
+        </div>
+        <td class="compare-odds-column">
+          <img alt="Bet365 logo" />
+          <a class="book-odds">u10.5 -115</a>
+        </td>
+      </tr>
+    </table>
+    """
+
+    rows = build_covers_prop_rows(
+        html,
+        report_date=date(2026, 4, 4),
+        allowed_markets={"player_points"},
+        page_snapshot_at="2026-04-04T14:10:00Z",
+    )
+    frame = pd.DataFrame(rows)
+
+    assert list(frame["player"]) == ["Kevin Huerter"]
+
+
+def test_merge_prop_source_rows_dedupes_exact_overlap_and_keeps_priority_source():
+    scores_row = {
+        "player": "Tyrese Maxey",
+        "line": 27.5,
+        "side": "over",
+        "odds": -112,
+        "book": "draftkings",
+        "commence_time": "2026-04-04T23:00:00Z",
+        "home_team": "Philadelphia 76ers",
+        "away_team": "Detroit Pistons",
+        "market_key": "player_points",
+        "source_provider": "scoresandodds",
+    }
+    covers_row = {**scores_row, "source_provider": "covers"}
+
+    merged, sources_used = merge_prop_source_rows(
+        {"scoresandodds": [scores_row], "covers": [covers_row]},
+        source_priority=("scoresandodds", "covers"),
+    )
+
+    assert sources_used == ["scoresandodds", "covers"]
+    assert len(merged) == 1
+    assert merged[0]["source_provider"] == "scoresandodds"
+
+
+def test_merge_prop_source_rows_keeps_complementary_sides_from_multiple_sources():
+    scores_row = {
+        "player": "Tyrese Maxey",
+        "line": 27.5,
+        "side": "over",
+        "odds": -112,
+        "book": "draftkings",
+        "commence_time": "2026-04-04T23:00:00Z",
+        "home_team": "Philadelphia 76ers",
+        "away_team": "Detroit Pistons",
+        "market_key": "player_points",
+        "source_provider": "scoresandodds",
+    }
+    covers_row = {
+        **scores_row,
+        "side": "under",
+        "odds": -108,
+        "source_provider": "covers",
+    }
+
+    merged, _ = merge_prop_source_rows(
+        {"scoresandodds": [scores_row], "covers": [covers_row]},
+        source_priority=("scoresandodds", "covers"),
+    )
+
+    frame = pd.DataFrame(merged).sort_values(["side"]).reset_index(drop=True)
+    assert list(frame["side"]) == ["over", "under"]
+    assert set(frame["source_provider"]) == {"scoresandodds", "covers"}
 
 
 def test_readiness_rows_include_live_quote_source_metadata():

@@ -15,6 +15,8 @@ from typing import List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
+from src.utils.artifact_metadata import stable_id
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -24,6 +26,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--games-csv", type=str, default=None)
     parser.add_argument("--players-csv", type=str, default=None)
     parser.add_argument("--output", type=str, default="data/market_lines.csv")
+    parser.add_argument(
+        "--require-two-sided",
+        action="store_true",
+        help="Drop market-line rows that do not have both over and under odds.",
+    )
     return parser.parse_args()
 
 
@@ -61,7 +68,7 @@ def pick_best_row(sub: pd.DataFrame) -> Optional[pd.Series]:
     return sub.loc[idx]
 
 
-def aggregate_props(df: pd.DataFrame) -> pd.DataFrame:
+def aggregate_props(df: pd.DataFrame, *, require_two_sided: bool = False) -> pd.DataFrame:
     required_cols = [
         "sport_key",
         "event_id",
@@ -88,8 +95,6 @@ def aggregate_props(df: pd.DataFrame) -> pd.DataFrame:
 
     group_cols = [
         "sport_key",
-        "event_id",
-        "commence_time",
         "game_date",
         "home_team",
         "away_team",
@@ -103,12 +108,33 @@ def aggregate_props(df: pd.DataFrame) -> pd.DataFrame:
 
     for keys, sub in grouped:
         key_dict = dict(zip(group_cols, keys))
+        event_id = ""
+        if "event_id" in sub.columns:
+            event_ids = sub["event_id"].dropna().astype(str)
+            if not event_ids.empty:
+                event_id = event_ids.iloc[0]
+        if not event_id:
+            event_id = stable_id(
+                key_dict["game_date"],
+                key_dict["home_team"],
+                key_dict["away_team"],
+                prefix="event",
+            )
+
+        commence_time = ""
+        if "commence_time" in sub.columns:
+            commence_times = sub["commence_time"].dropna().astype(str)
+            if not commence_times.empty:
+                commence_time = commence_times.iloc[0]
 
         over_rows = sub[sub["side"].str.lower() == "over"]
         under_rows = sub[sub["side"].str.lower() == "under"]
 
         over_best = pick_best_row(over_rows)
         under_best = pick_best_row(under_rows)
+        has_two_sided_market = over_best is not None and under_best is not None
+        if require_two_sided and not has_two_sided_market:
+            continue
         over_odds = float(over_best["odds"]) if over_best is not None else np.nan
         under_odds = float(under_best["odds"]) if under_best is not None else np.nan
         over_book = str(over_best["book"]) if over_best is not None else ""
@@ -116,9 +142,12 @@ def aggregate_props(df: pd.DataFrame) -> pd.DataFrame:
 
         rec = {
             **key_dict,
+            "event_id": event_id,
+            "commence_time": commence_time,
             # Keep legacy column name expected by scan_slate_with_model.py
             # even though this can represent points/rebounds/assists/3PM depending on market_key.
             "prop_pts_line": key_dict["line"],
+            "has_two_sided_market": int(has_two_sided_market),
             "over_odds_best": over_odds,
             "under_odds_best": under_odds,
             "best_over_book": over_book,
@@ -137,6 +166,24 @@ def aggregate_props(df: pd.DataFrame) -> pd.DataFrame:
         records.append(rec)
 
     out = pd.DataFrame.from_records(records)
+    if out.empty:
+        empty_columns = [
+            "sport_key",
+            "event_id",
+            "commence_time",
+            "game_date",
+            "home_team",
+            "away_team",
+            "market_key",
+            "player",
+            "prop_pts_line",
+            "has_two_sided_market",
+            "over_odds_best",
+            "under_odds_best",
+            "best_over_book",
+            "best_under_book",
+        ]
+        return pd.DataFrame(columns=empty_columns)
     out = out.drop(columns=["line"], errors="ignore")
 
     front_cols = [
@@ -149,6 +196,7 @@ def aggregate_props(df: pd.DataFrame) -> pd.DataFrame:
         "market_key",
         "player",
         "prop_pts_line",
+        "has_two_sided_market",
         "over_odds_best",
         "under_odds_best",
         "best_over_book",
@@ -255,7 +303,7 @@ def main():
     print(f"  -> Loaded {len(df_odds):,} rows")
 
     print("\nAggregating odds into one row per player/game/line ...")
-    df_agg = aggregate_props(df_odds)
+    df_agg = aggregate_props(df_odds, require_two_sided=args.require_two_sided)
     print(f"  -> Aggregated to {len(df_agg):,} rows "
           f"({df_agg['player'].nunique()} unique players)")
 

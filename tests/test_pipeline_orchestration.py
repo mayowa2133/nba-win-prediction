@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -9,6 +10,7 @@ import pytest
 
 from src.jobs import replay_historical_recommendations as replay_job
 from src.pipeline import run_full_slate_pipeline as pipeline
+from src.data.props_to_market_lines import aggregate_props
 
 
 def test_backfill_official_injuries_resumes_from_cursor(tmp_path, monkeypatch):
@@ -244,6 +246,136 @@ def test_score_and_materialize_live_game_markets_skips_when_no_models(monkeypatc
     )
 
     assert result == {"rows_materialized": 0, "status": "skipped_no_game_market_models"}
+
+
+def test_score_and_materialize_live_props_skips_when_scanner_writes_no_fresh_edges(monkeypatch, tmp_path):
+    stale_latest = tmp_path / "edges_with_market.csv"
+    stale_latest.write_text("stale\n", encoding="utf-8")
+    stale_dated = tmp_path / "edges" / "edges_with_market_2026-04-04.csv"
+    stale_dated.parent.mkdir(parents=True, exist_ok=True)
+    stale_dated.write_text("stale\n", encoding="utf-8")
+
+    monkeypatch.setattr(pipeline, "LATEST_EDGES", stale_latest)
+    monkeypatch.setattr(pipeline, "run_command", lambda command: None)
+    monkeypatch.setattr(
+        pipeline,
+        "materialize_edges",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("materialize_edges should not be called")),
+    )
+
+    result = pipeline.score_and_materialize_live_props(
+        date(2026, 4, 4),
+        "sqlite:///ignored.db",
+        {"edges": stale_dated},
+    )
+
+    assert result == {"rows_materialized": 0, "status": "skipped_no_live_prop_recommendations"}
+    assert not stale_latest.exists()
+    assert not stale_dated.exists()
+
+
+def test_score_and_materialize_live_props_skips_when_no_two_sided_market_lines(monkeypatch, tmp_path):
+    latest_edges = tmp_path / "edges_with_market.csv"
+    dated_market_lines = tmp_path / "market_lines.csv"
+    pd.DataFrame(columns=["game_date"]).to_csv(dated_market_lines, index=False)
+
+    monkeypatch.setattr(pipeline, "LATEST_EDGES", latest_edges)
+    monkeypatch.setattr(
+        pipeline,
+        "run_command",
+        lambda command: (_ for _ in ()).throw(AssertionError("scanner should not run without two-sided markets")),
+    )
+
+    result = pipeline.score_and_materialize_live_props(
+        date(2026, 4, 4),
+        "sqlite:///ignored.db",
+        {"edges": tmp_path / "dated_edges.csv", "market_lines": dated_market_lines},
+    )
+
+    assert result == {"rows_materialized": 0, "status": "skipped_no_two_sided_prop_markets"}
+
+
+def test_fetch_current_props_and_market_lines_merges_sources_and_filters_to_two_sided(monkeypatch, tmp_path):
+    latest_odds = tmp_path / "odds_slate.csv"
+    latest_market = tmp_path / "market_lines.csv"
+    latest_game_lines = tmp_path / "game_lines.csv"
+    dated_raw = tmp_path / "props_raw" / "odds_slate_2026-04-04.csv"
+    dated_market = tmp_path / "props_market" / "market_lines_2026-04-04.csv"
+    dated_game_lines = tmp_path / "game_lines" / "game_lines_2026-04-04.csv"
+
+    monkeypatch.setattr(pipeline, "LATEST_ODDS_SLATE", latest_odds)
+    monkeypatch.setattr(pipeline, "LATEST_MARKET_LINES", latest_market)
+    monkeypatch.setattr(pipeline, "LATEST_GAME_LINES", latest_game_lines)
+    monkeypatch.setattr(
+        pipeline,
+        "fetch_scoresandodds_prop_rows",
+        lambda report_date, allowed_markets: [
+            {
+                "sport_key": "basketball_nba",
+                "event_id": "evt_scores",
+                "commence_time": "2026-04-04T23:00:00Z",
+                "home_team": "Philadelphia 76ers",
+                "away_team": "Detroit Pistons",
+                "market_key": "player_points",
+                "player": "Tyrese Maxey",
+                "line": 27.5,
+                "side": "over",
+                "odds": -112,
+                "book": "draftkings",
+                "source_provider": "scoresandodds",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "fetch_covers_prop_rows",
+        lambda report_date, allowed_markets: [
+            {
+                "sport_key": "basketball_nba",
+                "event_id": "evt_covers",
+                "commence_time": "2026-04-04T23:00:00Z",
+                "home_team": "Philadelphia 76ers",
+                "away_team": "Detroit Pistons",
+                "market_key": "player_points",
+                "player": "Tyrese Maxey",
+                "line": 27.5,
+                "side": "under",
+                "odds": -108,
+                "book": "fanduel",
+                "source_provider": "covers",
+            }
+        ],
+    )
+    monkeypatch.setattr(pipeline, "get_sportsgameodds_api_key", lambda _: (_ for _ in ()).throw(RuntimeError("missing key")))
+
+    def fake_run_command(command):
+        odds_path = Path(command[command.index("--odds-slate") + 1])
+        out_path = Path(command[command.index("--output") + 1])
+        df = pd.read_csv(odds_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        aggregate_props(df, require_two_sided=True).to_csv(out_path, index=False)
+
+    monkeypatch.setattr(pipeline, "run_command", fake_run_command)
+
+    result = pipeline.fetch_current_props_and_market_lines(
+        date(2026, 4, 4),
+        {
+            "raw_props": dated_raw,
+            "market_lines": dated_market,
+            "game_lines": dated_game_lines,
+        },
+        "scoresandodds",
+    )
+
+    assert result["rows_written"] == 2
+    assert result["market_line_rows"] == 1
+    assert result["sources_used"] == ["scoresandodds", "covers"]
+    assert latest_odds.exists()
+    assert latest_market.exists()
+    market_lines = pd.read_csv(dated_market)
+    assert len(market_lines) == 1
+    assert market_lines.iloc[0]["over_odds_best"] == -112.0
+    assert market_lines.iloc[0]["under_odds_best"] == -108.0
 
 
 def test_bootstrap_mode_continues_after_historical_backfill_failure(tmp_path, monkeypatch):
