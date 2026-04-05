@@ -20,6 +20,10 @@ env/
 *.swp
 *.swo
 *~
+*.xcuserstate
+xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
 
 # Data files (too large for GitHub)
 /data/*

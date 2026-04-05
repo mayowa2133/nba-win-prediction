@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Crossover Insights</title>
+    <link href="https://fonts.googleapis.com" rel="preconnect" />
+    <link crossorigin href="https://fonts.gstatic.com" rel="preconnect" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Epilogue:wght@700;800;900&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "on-secondary-fixed": "#161b27",
+              "on-tertiary-fixed-variant": "#454747",
+              "tertiary-fixed": "#e2e2e2",
+              background: "#0e131e",
+              "on-tertiary-fixed": "#1a1c1c",
+              secondary: "#c2c6d6",
+              "surface-dim": "#0e131e",
+              "surface-container": "#1b1f2b",
+              "inverse-surface": "#dee2f2",
+              "on-primary": "#233600",
+              "surface-container-lowest": "#090e19",
+              "on-surface": "#dee2f2",
+              primary: "#99da00",
+              "on-secondary": "#2b303d",
+              "secondary-container": "#444956",
+              "secondary-fixed-dim": "#c2c6d6",
+              "inverse-on-surface": "#2b303c",
+              outline: "#909096",
+              "on-error-container": "#ffdad6",
+              "tertiary-fixed-dim": "#c6c6c7",
+              "on-error": "#690005",
+              "on-surface-variant": "#c6c6cc",
+              "on-primary-container": "#5f8900",
+              tertiary: "#c6c6c7",
+              "tertiary-container": "#0f1111",
+              "on-tertiary-container": "#7b7d7d",
+              "on-secondary-container": "#b4b8c8",
+              "on-primary-fixed": "#131f00",
+              "on-secondary-fixed-variant": "#424754",
+              "inverse-primary": "#476800",
+              error: "#ffb4ab",
+              "on-tertiary": "#2f3131",
+              "on-background": "#dee2f2",
+              "secondary-fixed": "#dee2f3",
+              "error-container": "#93000a",
+              "surface-container-low": "#171b27",
+              "surface-variant": "#303541",
+              "surface-container-high": "#252a36",
+              "surface-tint": "#99da00",
+              "surface-container-highest": "#303541",
+              "surface-bright": "#343946",
+              "on-primary-fixed-variant": "#354e00",
+              "primary-container": "#0a1300",
+              surface: "#0e131e",
+              "primary-fixed": "#aff800",
+              "primary-fixed-dim": "#99da00",
+              "outline-variant": "#45464c",
+            },
+            borderRadius: {
+              DEFAULT: "0.125rem",
+              lg: "0.25rem",
+              xl: "0.5rem",
+              full: "0.75rem",
+              "2xl": "1rem",
+            },
+            fontFamily: {
+              headline: ["Epilogue", "sans-serif"],
+              body: ["Inter", "sans-serif"],
+              label: ["Space Grotesk", "sans-serif"],
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      .material-symbols-outlined {
+        font-variation-settings: "FILL" 0, "wght" 300, "GRAD" 0, "opsz" 24;
+      }
+
+      .hide-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+
+      .hide-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+
+      .data-grid-pattern {
+        background-image: radial-gradient(rgba(153, 218, 0, 0.05) 1px, transparent 1px);
+        background-size: 24px 24px;
+      }
+
+      .bg-glass {
+        background: rgba(14, 19, 30, 0.7);
+        backdrop-filter: blur(20px);
+      }
+
+      .app-view {
+        display: none;
+      }
+
+      .app-view.active {
+        display: block;
+      }
+
+      body {
+        min-height: max(884px, 100dvh);
+      }
+    </style>
+  </head>
+  <body class="bg-background font-body text-on-surface selection:bg-primary selection:text-on-primary">
+    <header
+      class="fixed top-0 z-50 h-16 w-full bg-[#0e131e]/70 shadow-2xl shadow-[#090e19]/40 backdrop-blur-xl"
+    >
+      <div class="bg-gradient-to-b from-[#171b27] to-transparent">
+        <div class="flex h-16 w-full items-center justify-between px-6">
+          <div class="flex items-center gap-4">
+            <button class="hidden text-[#99da00]" id="back-button" type="button">
+              <span class="material-symbols-outlined">arrow_back</span>
+            </button>
+            <button class="text-[#99da00]" id="menu-button" type="button">
+              <span class="material-symbols-outlined">menu</span>
+            </button>
+            <div>
+              <h1 class="font-headline text-xl font-black uppercase tracking-[0.25em] text-[#99da00]">
+                Crossover Insights
+              </h1>
+              <p class="hidden text-[10px] uppercase tracking-[0.25em] text-on-surface-variant sm:block" id="header-copy">
+                NBA decision support
+              </p>
+            </div>
+          </div>
+          <div class="hidden items-center gap-8 md:flex">
+            <button
+              class="nav-link font-label text-sm uppercase tracking-[0.2em] text-[#99da00]"
+              data-route="home"
+              type="button"
+            >
+              Home
+            </button>
+            <button
+              class="nav-link font-label text-sm uppercase tracking-[0.2em] text-[#c6c6cc] transition-colors hover:text-[#99da00]"
+              data-route="game"
+              type="button"
+            >
+              Games
+            </button>
+            <button
+              class="nav-link font-label text-sm uppercase tracking-[0.2em] text-[#c6c6cc] transition-colors hover:text-[#99da00]"
+              data-route="parlay"
+              type="button"
+            >
+              Parlay
+            </button>
+            <button
+              class="nav-link font-label text-sm uppercase tracking-[0.2em] text-[#c6c6cc] transition-colors hover:text-[#99da00]"
+              data-route="trends"
+              type="button"
+            >
+              Trends
+            </button>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="hidden text-right sm:block">
+              <p class="font-label text-[10px] uppercase tracking-[0.2em] text-on-surface-variant">Queue</p>
+              <p class="font-label text-xs font-bold text-on-surface" id="queue-header-count">0 picks</p>
+            </div>
+            <div
+              class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-primary/20 bg-surface-container-highest text-xs font-bold text-primary"
+            >
+              CI
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="mx-auto max-w-7xl px-4 pb-32 pt-24 md:px-8">
+      <section class="app-view active" id="view-home">
+        <section class="mb-10 flex gap-3 overflow-x-auto pb-2 hide-scrollbar" id="date-selector"></section>
+
+        <section class="mb-12">
+          <div class="mb-6 flex items-end justify-between">
+            <div>
+              <h2 class="font-headline text-3xl font-black tracking-tight text-on-surface">TODAY'S BEST EDGES</h2>
+              <p class="mt-1 text-sm text-on-surface-variant">Quant-driven, high-confidence signals from the latest slate.</p>
+            </div>
+            <div class="hidden gap-2 sm:flex">
+              <button
+                class="flex h-10 w-10 items-center justify-center rounded-full border border-outline-variant text-on-surface-variant transition-all hover:border-primary hover:text-primary"
+                id="carousel-prev"
+                type="button"
+              >
+                <span class="material-symbols-outlined">chevron_left</span>
+              </button>
+              <button
+                class="flex h-10 w-10 items-center justify-center rounded-full border border-outline-variant text-on-surface-variant transition-all hover:border-primary hover:text-primary"
+                id="carousel-next"
+                type="button"
+              >
+                <span class="material-symbols-outlined">chevron_right</span>
+              </button>
+            </div>
+          </div>
+          <div class="hide-scrollbar -mx-1 flex gap-4 overflow-x-auto px-1 pb-4" id="edge-carousel"></div>
+        </section>
+
+        <section
+          class="mb-8 flex flex-col justify-between gap-6 rounded-2xl border border-outline-variant/10 bg-surface-container-low p-6 md:flex-row md:items-center"
+        >
+          <div class="flex flex-wrap items-center gap-3" id="market-filters"></div>
+          <div class="flex items-center gap-3" id="confidence-filters"></div>
+        </section>
+
+        <section class="mb-16">
+          <div class="mb-8 flex items-center gap-4">
+            <h2 class="font-headline text-2xl font-black uppercase tracking-tight text-white">Today's NBA Slate</h2>
+            <div class="h-px flex-grow bg-outline-variant/20"></div>
+            <span class="font-label text-[10px] uppercase tracking-[0.2em] text-on-surface-variant" id="slate-count"
+              >0 games</span
+            >
+          </div>
+          <div class="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3" id="slate-grid"></div>
+        </section>
+
+        <section class="mb-12">
+          <h2 class="mb-6 font-headline text-2xl font-black uppercase tracking-tight text-white">Trending Parlays</h2>
+          <div class="rounded-2xl border border-outline-variant/10 bg-surface-container-low" id="home-parlays"></div>
+        </section>
+      </section>
+
+      <section class="app-view" id="view-pick">
+        <section class="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
+          <div class="space-y-6 lg:col-span-8">
+            <div class="space-y-2">
+              <div class="flex items-center gap-2">
+                <span
+                  class="rounded-full bg-surface-container-highest px-3 py-1 font-label text-[10px] uppercase tracking-[0.2em] text-primary"
+                  id="pick-status-badge"
+                  >NBA - LIVE SOON</span
+                >
+                <span class="font-label text-xs text-on-surface-variant" id="pick-matchup-label">LAL @ GSW</span>
+              </div>
+              <h2 class="font-headline text-4xl font-black leading-none tracking-tighter md:text-6xl">
+                <span id="pick-player-title">Featured Pick</span><br />
+                <span class="text-primary" id="pick-market-title">OVER 25.5 POINTS</span>
+              </h2>
+            </div>
+
+            <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div class="relative overflow-hidden rounded-xl bg-surface-container-low p-8">
+                <div class="absolute right-0 top-0 p-4 opacity-10">
+                  <span class="material-symbols-outlined text-8xl">trending_up</span>
+                </div>
+                <p class="mb-1 font-label text-xs uppercase tracking-[0.2em] text-on-surface-variant">Crossover Edge</p>
+                <div class="font-headline text-6xl font-black tracking-tighter text-primary" id="pick-edge">0%</div>
+                <p class="mt-4 text-sm leading-relaxed text-on-surface-variant" id="pick-edge-copy"></p>
+              </div>
+              <div class="rounded-xl border-l-4 border-primary bg-surface-container-low p-8">
+                <p class="mb-1 font-label text-xs uppercase tracking-[0.2em] text-on-surface-variant">Confidence Score</p>
+                <div class="font-headline text-6xl font-black tracking-tighter text-on-surface" id="pick-confidence">HIGH</div>
+                <div class="mt-6 flex gap-1" id="pick-confidence-bars"></div>
+              </div>
+            </div>
+          </div>
+
+          <aside class="sticky top-24 space-y-6 rounded-xl bg-surface-container p-6 shadow-2xl lg:col-span-4">
+            <h3 class="font-label text-xs uppercase tracking-[0.2em] text-on-surface-variant">Market Comparison</h3>
+            <div class="space-y-4">
+              <div class="flex items-end justify-between border-b border-outline-variant/30 pb-4">
+                <div>
+                  <p class="mb-1 text-xs text-on-surface-variant">Model Projection</p>
+                  <p class="font-label text-3xl font-bold text-on-surface" id="pick-model-projection">28.4</p>
+                </div>
+                <div class="text-right">
+                  <p class="mb-1 text-xs text-on-surface-variant">Sportsbook Line</p>
+                  <p class="font-label text-3xl font-bold text-outline" id="pick-sportsbook-line">25.5</p>
+                </div>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-sm">Win Probability</span>
+                <span class="font-label text-xl font-bold text-primary" id="pick-win-prob">64.2%</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-sm">Fair Odds</span>
+                <span class="font-label text-xl font-bold text-on-surface" id="pick-fair-odds">-180</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-sm">Market Implied</span>
+                <span class="font-label text-xl font-bold text-on-surface" id="pick-market-implied">52.4%</span>
+              </div>
+            </div>
+            <div class="space-y-3 pt-4">
+              <button
+                class="w-full rounded-lg bg-primary py-4 font-label font-bold uppercase tracking-[0.2em] text-on-primary transition-all hover:brightness-110 active:scale-[0.98]"
+                id="pick-add-to-parlay"
+                type="button"
+              >
+                Add to Parlay
+              </button>
+              <div class="grid grid-cols-2 gap-3">
+                <button
+                  class="rounded-lg border border-outline-variant px-2 py-3 font-label text-xs uppercase tracking-[0.2em] text-on-surface transition-colors hover:bg-surface-bright"
+                  id="pick-save-button"
+                  type="button"
+                >
+                  Save Pick
+                </button>
+                <button
+                  class="rounded-lg border border-outline-variant px-2 py-3 font-label text-xs uppercase tracking-[0.2em] text-on-surface transition-colors hover:bg-surface-bright"
+                  id="pick-played-button"
+                  type="button"
+                >
+                  Mark Played
+                </button>
+              </div>
+            </div>
+          </aside>
+        </section>
+
+        <section class="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-12">
+          <div class="data-grid-pattern rounded-xl bg-surface-container-low p-8 lg:col-span-7">
+            <div class="mb-8 flex items-center justify-between">
+              <h3 class="font-headline text-lg font-bold uppercase tracking-tight">Likely Range Variance</h3>
+              <span class="font-label text-xs text-on-surface-variant">PROBABILITY DENSITY</span>
+            </div>
+            <div class="relative flex h-48 items-end justify-between gap-1" id="pick-range-bars"></div>
+            <div class="mt-4 flex justify-between border-t border-outline-variant/20 pt-4 font-label text-xs text-on-surface-variant">
+              <span id="pick-range-min">22</span>
+              <span class="text-on-surface" id="pick-range-summary">Likely: 25 - 31</span>
+              <span id="pick-range-max">34</span>
+            </div>
+          </div>
+          <div class="rounded-xl border-l-4 border-primary bg-surface-container-low p-8 lg:col-span-5">
+            <h3 class="mb-4 font-headline text-lg font-bold uppercase tracking-tight">Why we like this pick</h3>
+            <div class="space-y-4 text-sm leading-relaxed text-on-surface-variant" id="pick-reasons"></div>
+            <div class="flex items-center gap-3 pt-6">
+              <span class="material-symbols-outlined text-primary">verified</span>
+              <span class="font-label text-[10px] uppercase tracking-[0.2em] text-primary" id="pick-footer-copy"
+                >Model confidence loaded from latest feed</span
+              >
+            </div>
+          </div>
+        </section>
+
+        <section class="mt-8 rounded-xl bg-surface-container-low p-8">
+          <h3 class="mb-8 font-headline text-lg font-bold uppercase tracking-tight">Milestone Ladder</h3>
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-4" id="pick-milestones"></div>
+        </section>
+      </section>
+
+      <section class="app-view" id="view-game">
+        <section class="relative mb-12 overflow-hidden rounded-xl bg-surface-container-low p-8">
+          <div class="absolute right-0 top-0 p-4">
+            <span class="flex items-center gap-1 font-label text-[10px] uppercase tracking-tight text-error">
+              <span class="h-1.5 w-1.5 rounded-full bg-error"></span> MODEL PREVIEW
+            </span>
+          </div>
+          <div class="flex flex-col items-center justify-between gap-8 md:flex-row">
+            <div class="flex flex-1 flex-col items-center text-center md:items-start md:text-left">
+              <div
+                class="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-surface-container-highest text-2xl font-black"
+                id="game-away-chip"
+              >
+                AWY
+              </div>
+              <h1 class="font-headline text-2xl font-black tracking-tighter md:text-4xl" id="game-away-name">Away Team</h1>
+              <p class="mt-1 font-label text-sm text-on-surface-variant" id="game-away-meta">Latest slate view</p>
+            </div>
+            <div class="flex flex-col items-center justify-center border-outline-variant/10 px-8 md:border-x">
+              <div class="mb-2 flex items-center gap-6">
+                <span class="font-headline text-4xl font-black tabular-nums md:text-6xl" id="game-away-score">0</span>
+                <span class="font-label text-xl text-outline">-</span>
+                <span class="font-headline text-4xl font-black tabular-nums md:text-6xl" id="game-home-score">0</span>
+              </div>
+              <div class="flex flex-col items-center gap-1">
+                <span class="font-label text-xs uppercase tracking-[0.2em] text-on-surface-variant" id="game-spread"
+                  >Spread: N/A</span
+                >
+                <span class="font-label text-xs uppercase tracking-[0.2em] text-on-surface-variant" id="game-total"
+                  >O/U: N/A</span
+                >
+              </div>
+            </div>
+            <div class="flex flex-1 flex-col items-center text-center md:items-end md:text-right">
+              <div
+                class="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-surface-container-highest text-2xl font-black"
+                id="game-home-chip"
+              >
+                HOM
+              </div>
+              <h1 class="font-headline text-2xl font-black uppercase tracking-tighter md:text-4xl" id="game-home-name">
+                Home Team
+              </h1>
+              <p class="mt-1 font-label text-sm text-on-surface-variant" id="game-home-meta">Projected recommendations</p>
+            </div>
+          </div>
+        </section>
+
+        <nav class="mb-8 flex gap-1 overflow-x-auto border-b border-outline-variant/10 hide-scrollbar">
+          <button class="border-b-2 border-primary px-6 py-3 font-label text-sm uppercase tracking-[0.2em] text-primary" type="button">
+            Recommended Bets
+          </button>
+          <button class="px-6 py-3 font-label text-sm uppercase tracking-[0.2em] text-on-surface-variant" type="button">
+            Player Props
+          </button>
+          <button class="px-6 py-3 font-label text-sm uppercase tracking-[0.2em] text-on-surface-variant" type="button">
+            Game Lines
+          </button>
+          <button class="px-6 py-3 font-label text-sm uppercase tracking-[0.2em] text-on-surface-variant" type="button">
+            Insights
+          </button>
+        </nav>
+
+        <div class="grid grid-cols-1 gap-8 lg:grid-cols-3">
+          <div class="space-y-6 lg:col-span-2">
+            <div class="flex items-center justify-between">
+              <h2 class="font-headline text-xl font-bold uppercase tracking-tight">Top Insights <span class="ml-1 text-primary">.</span></h2>
+              <span class="font-label text-xs text-on-surface-variant" id="game-rec-count">0 active picks found</span>
+            </div>
+            <div class="space-y-6" id="game-recommendations"></div>
+          </div>
+
+          <div class="space-y-8">
+            <section>
+              <h3 class="mb-4 flex items-center gap-2 font-headline text-sm font-black uppercase tracking-[0.2em]">
+                Injury Context <span class="h-2 w-2 rounded-full bg-error"></span>
+              </h3>
+              <div class="space-y-3" id="game-injuries"></div>
+            </section>
+
+            <section>
+              <h3 class="mb-4 font-headline text-sm font-black uppercase tracking-[0.2em]">Model Confidence</h3>
+              <div class="rounded-xl border border-outline-variant/10 bg-surface-container-lowest p-6" id="game-model-card"></div>
+            </section>
+
+            <div class="relative overflow-hidden rounded-xl bg-gradient-to-br from-primary to-on-primary-container p-6">
+              <div class="relative z-10">
+                <h4 class="mb-2 font-headline text-xl font-black uppercase leading-none text-on-primary">Unlock Edge+</h4>
+                <p class="mb-4 text-xs text-on-primary/80">Get access to deeper filters, saved plays, and readiness snapshots.</p>
+                <button class="rounded bg-on-primary px-4 py-2 font-label text-[10px] font-bold uppercase text-primary shadow-lg" type="button">
+                  Go Pro Now
+                </button>
+              </div>
+              <div class="absolute -bottom-4 -right-4 opacity-10">
+                <span class="material-symbols-outlined text-[120px]" style="font-variation-settings: 'FILL' 1">trending_up</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="app-view" id="view-parlay">
+        <div class="grid grid-cols-1 gap-8 lg:grid-cols-12">
+          <div class="space-y-8 lg:col-span-8">
+            <section>
+              <div class="mb-8 flex flex-col justify-between gap-4 md:flex-row md:items-end">
+                <div class="space-y-1">
+                  <h1 class="font-headline text-4xl font-black uppercase tracking-tight text-white">Parlay Builder</h1>
+                  <p class="font-label text-sm uppercase tracking-[0.2em] text-on-surface-variant" id="parlay-subtitle">
+                    0 active picks in betslip
+                  </p>
+                </div>
+                <div class="flex items-center gap-3 rounded-lg bg-surface-container-low p-1">
+                  <button class="rounded-md bg-surface-bright px-4 py-2 font-label text-xs uppercase tracking-[0.2em] text-primary" type="button">
+                    Live Markets
+                  </button>
+                  <button class="px-4 py-2 font-label text-xs uppercase tracking-[0.2em] text-on-surface-variant" type="button">
+                    Upcoming
+                  </button>
+                </div>
+              </div>
+              <div class="space-y-4" id="parlay-picks"></div>
+              <div class="hidden rounded-r-xl border-l-2 border-error bg-error-container/10 p-4" id="parlay-warning"></div>
+            </section>
+
+            <section class="space-y-6">
+              <h2 class="flex items-center gap-2 font-headline text-xl font-bold uppercase tracking-tight text-white">
+                <span class="material-symbols-outlined text-primary">auto_awesome</span>
+                Model Recommendations
+              </h2>
+              <div class="grid grid-cols-1 gap-4 md:grid-cols-2" id="parlay-recommendations"></div>
+            </section>
+          </div>
+
+          <div class="lg:col-span-4">
+            <div class="sticky top-24 space-y-6">
+              <div class="overflow-hidden rounded-2xl border border-outline-variant/10 bg-surface-container-high shadow-2xl">
+                <div class="space-y-8 p-8">
+                  <div>
+                    <p class="mb-2 font-label text-xs uppercase tracking-[0.2em] text-on-surface-variant">Total Parlay Odds</p>
+                    <h2 class="font-label text-6xl font-black text-primary" id="parlay-total-odds">+0</h2>
+                  </div>
+                  <div class="space-y-4">
+                    <div class="flex items-center justify-between">
+                      <span class="font-label text-sm uppercase tracking-[0.2em] text-on-surface-variant">Risk Level</span>
+                      <span class="font-label text-sm font-bold uppercase tracking-[0.2em] text-primary" id="parlay-risk-level"
+                        >Low</span
+                      >
+                    </div>
+                    <div class="flex h-1.5 w-full gap-1 overflow-hidden rounded-full bg-surface-container-highest">
+                      <div class="h-full w-1/3 bg-primary" id="parlay-risk-bar-1"></div>
+                      <div class="h-full w-1/3 bg-surface-variant" id="parlay-risk-bar-2"></div>
+                      <div class="h-full w-1/3 bg-surface-variant" id="parlay-risk-bar-3"></div>
+                    </div>
+                  </div>
+                  <div class="space-y-4 border-t border-outline-variant/20 pt-4">
+                    <div class="flex justify-between text-sm text-on-surface-variant">
+                      <span>Wager</span>
+                      <span class="text-white">$100.00</span>
+                    </div>
+                    <div class="flex items-end justify-between">
+                      <div>
+                        <p class="font-label text-xs uppercase tracking-[0.2em] text-on-surface-variant">Estimated Payout</p>
+                        <p class="font-label text-2xl font-bold text-white" id="parlay-payout">$100.00</p>
+                      </div>
+                      <div class="text-right">
+                        <p class="font-label text-[10px] uppercase tracking-[0.2em] text-primary">Profit</p>
+                        <p class="font-label text-lg font-bold text-primary" id="parlay-profit">$0.00</p>
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    class="flex w-full items-center justify-center gap-3 rounded-lg bg-gradient-to-r from-primary to-on-primary-container py-5 font-headline font-black uppercase tracking-[0.2em] text-on-primary transition-transform active:scale-[0.98]"
+                    type="button"
+                  >
+                    Copy to Sportsbook
+                    <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1">bolt</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6">
+                <h4 class="mb-3 flex items-center gap-2 font-label text-xs uppercase tracking-[0.2em] text-on-surface-variant">
+                  <span class="material-symbols-outlined text-sm text-primary">insights</span>
+                  Builder Insight
+                </h4>
+                <p class="text-sm italic leading-relaxed text-on-surface-variant" id="parlay-insight"></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="app-view" id="view-trends">
+        <div class="mb-8 flex flex-col justify-between gap-6 md:flex-row md:items-end">
+          <div>
+            <p class="mb-2 font-label text-xs uppercase tracking-[0.2em] text-primary">Performance Audit</p>
+            <h1 class="font-headline text-4xl font-black tracking-tighter md:text-5xl">THE TRACK RECORD</h1>
+          </div>
+          <div class="flex gap-3">
+            <button
+              class="flex items-center gap-2 rounded-lg border border-outline-variant/10 bg-surface-container-highest px-4 py-2 font-label text-xs tracking-[0.2em] text-on-surface-variant transition-all hover:bg-surface-bright"
+              type="button"
+            >
+              <span class="material-symbols-outlined text-[18px]">calendar_today</span>
+              By Date
+            </button>
+            <button
+              class="flex items-center gap-2 rounded-lg border border-outline-variant/10 bg-surface-container-highest px-4 py-2 font-label text-xs tracking-[0.2em] text-on-surface-variant transition-all hover:bg-surface-bright"
+              type="button"
+            >
+              <span class="material-symbols-outlined text-[18px]">filter_list</span>
+              By Market Type
+            </button>
+          </div>
+        </div>
+
+        <div class="mb-8 grid grid-cols-1 gap-6 md:grid-cols-3">
+          <div class="relative overflow-hidden rounded-xl bg-surface-container-low p-8">
+            <div class="absolute left-0 top-0 h-full w-1 bg-primary"></div>
+            <p class="mb-4 font-label text-[10px] uppercase tracking-[0.3em] text-on-surface-variant">Portfolio ROI</p>
+            <div class="flex items-baseline gap-2">
+              <span class="font-headline text-5xl font-black text-primary" id="trend-roi">12.4%</span>
+              <span class="material-symbols-outlined text-primary">trending_up</span>
+            </div>
+            <div class="mt-4 flex gap-1">
+              <div class="h-1 flex-1 rounded-full bg-primary"></div>
+              <div class="h-1 flex-1 rounded-full bg-primary"></div>
+              <div class="h-1 flex-1 rounded-full bg-primary"></div>
+              <div class="h-1 flex-1 rounded-full bg-surface-container-highest"></div>
+            </div>
+          </div>
+          <div class="overflow-hidden rounded-xl bg-surface-container-low p-8">
+            <p class="mb-4 font-label text-[10px] uppercase tracking-[0.3em] text-on-surface-variant">CLV Edge</p>
+            <div class="flex items-baseline gap-2 text-on-surface">
+              <span class="font-headline text-5xl font-black" id="trend-clv">+3.2%</span>
+              <span class="font-label text-sm text-primary">BEATING CLOSING LINE</span>
+            </div>
+          </div>
+          <div class="overflow-hidden rounded-xl bg-surface-container-low p-8">
+            <p class="mb-4 font-label text-[10px] uppercase tracking-[0.3em] text-on-surface-variant">Hit Rate</p>
+            <div class="flex items-baseline gap-2 text-on-surface">
+              <span class="font-headline text-5xl font-black" id="trend-hit-rate">58.4%</span>
+              <span class="font-label text-sm text-on-surface-variant" id="trend-record">342-244-12</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mb-8 rounded-xl border border-outline-variant/5 bg-surface-container-low p-8">
+          <div class="mb-12 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h3 class="mb-1 font-headline text-xl font-bold uppercase tracking-tight">Cumulative Profit Yield</h3>
+              <p class="text-sm text-on-surface-variant">Verification period: latest settled sample or preview data.</p>
+            </div>
+            <div class="flex items-center gap-6 font-label text-xs tracking-[0.2em] text-on-surface-variant">
+              <div class="flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-primary"></span> Actual ROI</div>
+              <div class="flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-surface-variant"></span> Model projection</div>
+            </div>
+          </div>
+          <div class="relative mt-8 h-[300px] w-full">
+            <svg class="h-full w-full overflow-visible" id="trend-chart" viewBox="0 0 1000 300"></svg>
+            <div class="absolute bottom-0 left-0 flex w-full justify-between pt-4 font-label text-[10px] uppercase text-on-surface-variant" id="trend-chart-labels"></div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-8 lg:grid-cols-3">
+          <div class="space-y-6 lg:col-span-2">
+            <div class="flex items-center justify-between">
+              <h3 class="font-headline text-xl font-bold uppercase tracking-tight">Recent Settlement</h3>
+              <span class="font-label text-[10px] uppercase tracking-[0.2em] text-on-surface-variant" id="settlement-caption"
+                >showing recent sample</span
+              >
+            </div>
+            <div class="space-y-3" id="settlement-list"></div>
+          </div>
+
+          <div class="space-y-6">
+            <div class="rounded-xl border border-primary/10 bg-surface-container-low p-8">
+              <div class="mb-6 flex h-12 w-12 items-center justify-center rounded-lg bg-primary">
+                <span class="material-symbols-outlined text-3xl font-black text-on-primary">verified_user</span>
+              </div>
+              <h3 class="mb-4 font-headline text-xl font-bold uppercase tracking-tight">Our Commitment To Truth</h3>
+              <div class="space-y-4 text-sm leading-relaxed text-on-surface-variant">
+                <p>We expose market readiness instead of pretending every model is equally mature.</p>
+                <p>When settlement data exists, we surface ROI, CLV, and hit rate directly in the app.</p>
+              </div>
+            </div>
+
+            <div class="rounded-xl border border-outline-variant/5 bg-surface-container-low p-8">
+              <p class="mb-4 font-label text-[10px] uppercase tracking-[0.2em] text-on-surface-variant">Sharp Action Score</p>
+              <div class="flex items-end justify-between">
+                <span class="font-headline text-4xl font-black text-on-surface" id="sharp-score">94/100</span>
+                <div class="mb-2 flex items-center gap-1">
+                  <div class="h-4 w-2 bg-primary"></div>
+                  <div class="h-6 w-2 bg-primary"></div>
+                  <div class="h-8 w-2 bg-primary"></div>
+                  <div class="h-5 w-2 bg-primary"></div>
+                  <div class="h-7 w-2 bg-primary"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <section class="mt-20 rounded-2xl border border-outline-variant/10 bg-surface-container-lowest px-8 py-12">
+          <div class="mb-8 flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h4 class="mb-4 font-headline text-2xl font-black uppercase tracking-tighter">Market Readiness</h4>
+              <p class="max-w-2xl text-sm leading-loose text-on-surface-variant">
+                Experimental models stay clearly labeled. Production models earn that status through repeatability and live sample quality.
+              </p>
+            </div>
+            <div class="flex gap-4 font-label text-xs uppercase tracking-[0.2em]">
+              <div class="flex items-center gap-2 rounded-lg border border-outline-variant/20 bg-surface-container px-4 py-2">
+                <span class="h-2 w-2 rounded-full bg-primary"></span>
+                <span class="text-on-surface">System live</span>
+              </div>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 gap-6 md:grid-cols-12" id="trends-readiness-grid"></div>
+        </section>
+      </section>
+    </main>
+
+    <nav
+      class="fixed bottom-0 z-50 w-full rounded-t-2xl border-t border-white/5 bg-[#171b27]/80 shadow-[0_-10px_30px_rgba(9,14,25,0.5)] backdrop-blur-2xl md:hidden"
+    >
+      <div class="flex h-20 w-full items-center justify-around">
+        <button class="mobile-nav flex flex-col items-center justify-center text-[#99da00] font-bold scale-110" data-route="home" type="button">
+          <span class="material-symbols-outlined">home</span>
+          <span class="mt-1 font-label text-[10px] uppercase tracking-[0.2em]">Home</span>
+        </button>
+        <button class="mobile-nav flex flex-col items-center justify-center text-[#c6c6cc] opacity-60" data-route="game" type="button">
+          <span class="material-symbols-outlined">sports_basketball</span>
+          <span class="mt-1 font-label text-[10px] uppercase tracking-[0.2em]">Games</span>
+        </button>
+        <button class="mobile-nav flex flex-col items-center justify-center text-[#c6c6cc] opacity-60" data-route="parlay" type="button">
+          <span class="material-symbols-outlined">analytics</span>
+          <span class="mt-1 font-label text-[10px] uppercase tracking-[0.2em]">Parlay</span>
+        </button>
+        <button class="mobile-nav flex flex-col items-center justify-center text-[#c6c6cc] opacity-60" data-route="trends" type="button">
+          <span class="material-symbols-outlined">insights</span>
+          <span class="mt-1 font-label text-[10px] uppercase tracking-[0.2em]">Trends</span>
+        </button>
+      </div>
+    </nav>
+
+    <footer class="w-full border-t border-[#303541]/20 bg-[#0e131e] px-8 py-12">
+      <div class="flex w-full flex-col items-center gap-4 text-center">
+        <div class="mb-2 flex gap-6">
+          <a class="text-[11px] uppercase tracking-[0.2em] text-[#c6c6cc]/50 transition-colors hover:text-white" href="#">Terms</a>
+          <a class="text-[11px] uppercase tracking-[0.2em] text-[#c6c6cc]/50 transition-colors hover:text-white" href="#"
+            >Responsible Gaming</a
+          >
+          <a class="text-[11px] uppercase tracking-[0.2em] text-[#c6c6cc]/50 transition-colors hover:text-white" href="#">Privacy</a>
+        </div>
+        <p class="max-w-lg text-[11px] leading-relaxed tracking-tight text-[#c6c6cc]">
+          &copy; 2026 Crossover Insights. Please gamble responsibly. 1-800-GAMBLER.
+        </p>
+      </div>
+    </footer>
+
+    <script defer src="/static/app.js"></script>
+  </body>
+</html>
